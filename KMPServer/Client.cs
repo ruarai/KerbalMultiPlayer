@@ -11,7 +11,7 @@ using System.Collections.Concurrent;
 
 namespace KMPServer
 {
-	class Client
+	public class Client
 	{
 		public enum ActivityLevel
 		{

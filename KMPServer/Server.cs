@@ -27,7 +27,7 @@ using System.Collections.Concurrent;
 
 namespace KMPServer
 {
-    class Server
+    public class Server
     {
 
         public struct ClientMessage

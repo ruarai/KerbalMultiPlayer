@@ -9,7 +9,7 @@ using System.Net.Sockets;
 
 namespace KMPServer
 {
-	class ServerMain
+	public class ServerMain
 	{
 
 		public const int AUTO_RESTART_DELAY = 1000;
