@@ -136,6 +136,8 @@ namespace KMPServer
 			{
 				var line = Console.ReadLine();
 
+                if ((bool)ServerPluginAPI.ReturnIfEqual("OnPreServerCommand", true, false, line)) continue;
+
                 Log.Info("Command Input: {0}",line);
 
 				var parts = line.Split(' ');

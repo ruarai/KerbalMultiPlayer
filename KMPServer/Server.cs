@@ -2375,7 +2375,7 @@ namespace KMPServer
                 {
                     string message_lower = message_text.ToLower();
 
-                    if ((bool)ServerPluginAPI.ReturnIfEqual("OnClientCommand", true, false, message_text)) return;
+                    if ((bool)ServerPluginAPI.ReturnIfEqual("OnClientCommand", true, false,cl, message_text)) return;
 
                     if (message_lower == "!list")
                     {
