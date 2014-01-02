@@ -539,6 +539,10 @@ namespace KMPServer
                 var rawParts = input.Split(new char[] { ' ' }, 2);
 				var parts = cleanInput.Split(new char[] { ' ' }, 2);
                 //if (!parts[0].StartsWith("/")) { return; } //Allow server to send chat messages
+
+                if ((bool)ServerPluginAPI.ReturnIfEqual("OnServerCommand", true, false,input)) return;
+                //If a plugin returns true in their command handler, skip all other handling
+
                 switch (parts[0])
                 {
                     case "/ban": banServerCommand(parts); break;

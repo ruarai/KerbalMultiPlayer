@@ -34,10 +34,7 @@ namespace KMPServer
 
         public static void InvokeAll(string methodName)
         {
-            foreach (Plugin plugin in plugins)
-            {
-                plugin.Invoke(methodName);
-            }
+            InvokeAll(methodName,null);
         }
 
         public static void InvokeAll(string methodName,params object[] parameters)
@@ -51,12 +48,7 @@ namespace KMPServer
 
         public static object ReturnIfEqual(string methodName,object equalTo,object defaultReturn)
         {
-            foreach (Plugin plugin in plugins)
-            {
-                var returned = plugin.Invoke(methodName, null);
-                if (returned == equalTo) return equalTo;
-            }
-            return defaultReturn;
+            return ReturnIfEqual(methodName, equalTo, defaultReturn,null);
         }
 
         public static object ReturnIfEqual(string methodName, object equalTo, object defaultReturn,params object[] parameters)
@@ -64,7 +56,11 @@ namespace KMPServer
             foreach (Plugin plugin in plugins)
             {
                 var returned = plugin.Invoke(methodName, parameters);
-                if (returned == equalTo) return equalTo;
+                if (returned.Equals(equalTo))
+                {
+                    Log.Debug("Plugin {0} handled {1}",plugin.FileName,methodName);
+                    return equalTo;
+                }
             }
             return defaultReturn;
         }
@@ -89,17 +85,7 @@ namespace KMPServer
 
         public object Invoke(string methodName)
         {
-            try
-            {
-                var method = FindMethod(methodName);
-                return method != null ? method.Invoke(null, null) : null;
-            }
-            catch (Exception e)
-            {
-                Log.Debug("Plugin API exception in Invoke(methodName) from {0}",FileName);
-                Log.Debug(e.ToString());
-                return null;
-            }
+            return Invoke(methodName, null);
         }
 
         public object Invoke(string methodName,params object[] parameters)
@@ -128,7 +114,6 @@ namespace KMPServer
                     {
                         return method;
                     }
-                    Log.Info(method.Name);
                 }
             }
             return null;

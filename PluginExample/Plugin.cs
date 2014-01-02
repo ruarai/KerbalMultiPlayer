@@ -14,5 +14,14 @@ namespace PluginExample
             Log.Debug("Hello OnServerStart!");
         }
 
+        public static bool OnServerCommand(string input)
+        {
+            if (input.ToLower().Trim().Split(' ')[0] == "/test")
+            {
+                Log.Debug("Test completed!");
+                return true;
+            }
+            return false;
+        }
     }
 }
