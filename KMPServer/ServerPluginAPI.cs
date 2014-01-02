@@ -36,7 +36,7 @@ namespace KMPServer
         {
             foreach (Plugin plugin in plugins)
             {
-                plugin.Invoke("methodName");
+                plugin.Invoke(methodName);
             }
         }
 
@@ -44,29 +44,27 @@ namespace KMPServer
         {
             foreach (Plugin plugin in plugins)
             {
-                plugin.Invoke("methodName",parameters);
+                plugin.Invoke(methodName,parameters);
             }
         }
 
-        public static object ReturnFirst(string methodName,object defaultReturn)
+
+        public static object ReturnIfEqual(string methodName,object equalTo,object defaultReturn)
         {
             foreach (Plugin plugin in plugins)
             {
-                return plugin.Invoke(methodName);
+                var returned = plugin.Invoke(methodName, null);
+                if (returned == equalTo) return equalTo;
             }
-            return defaultReturn; //return whatever they specified if nothing happens
-            //This allows for much cleaner code when calling this method
-            //For example, 
-            //if(ServerPluginAPI.ReturnFirst("onServerCommand",false))
-            //would mean that even if no onServerCommand method existed in any plugins
-            //no extra handling of any possible null types would be neccessary
+            return defaultReturn;
         }
 
-        public static object ReturnFirst(string methodName,object defaultReturn,params object[] parameters)
+        public static object ReturnIfEqual(string methodName, object equalTo, object defaultReturn,params object[] parameters)
         {
             foreach (Plugin plugin in plugins)
             {
-                return plugin.Invoke(methodName,parameters);
+                var returned = plugin.Invoke(methodName, parameters);
+                if (returned == equalTo) return equalTo;
             }
             return defaultReturn;
         }
@@ -93,7 +91,8 @@ namespace KMPServer
         {
             try
             {
-                return FindMethod(methodName).Invoke(null, null);
+                var method = FindMethod(methodName);
+                return method != null ? method.Invoke(null, null) : null;
             }
             catch (Exception e)
             {
@@ -107,7 +106,8 @@ namespace KMPServer
         {
             try
             {
-                return FindMethod(methodName).Invoke(null, parameters);
+                var method = FindMethod(methodName);
+                return method != null ? method.Invoke(null, parameters) : null;
             }
             catch (Exception e)
             {
