@@ -128,6 +128,7 @@ namespace KMPServer
                     {
                         return method;
                     }
+                    Log.Info(method.Name);
                 }
             }
             return null;

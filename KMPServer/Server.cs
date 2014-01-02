@@ -415,6 +415,8 @@ namespace KMPServer
 			
             Log.Info("Hosting server on port {0} ...", settings.port);
 
+            ServerPluginAPI.InvokeAll("OnServerStart");
+
             clients = new SynchronizedCollection<Client>(settings.maxClients);
             flight_clients = new SynchronizedCollection<Client>(settings.maxClients);
             cleanupClients = new SynchronizedCollection<Client>(settings.maxClients);
