@@ -41,9 +41,10 @@ namespace PluginExample
         //Commands entered by clients and sent to the server
         public static bool OnClientCommand(Client cl, string input)
         {
-            if (input.ToLower().Trim().Split(' ')[0] == "/test")
+            if (input.ToLower().Trim().Split(' ')[0] == "!kickme")
             {
-                Log.Debug("Client command handled from {0}!",cl.username);
+                ServerMain.server.markClientForDisconnect(cl,"You got kicked by a plugin!");
+                ServerMain.server.sendTextMessageToAdmins(cl.username + " was kicked by a plugin.");
                 return true;
             }
             return false;
