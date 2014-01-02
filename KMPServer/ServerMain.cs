@@ -65,6 +65,8 @@ namespace KMPServer
 			Log.Info("    Based on Kerbal LiveFeed created by Alfred Lam");
 			Log.Info("");
 
+		    ServerPluginAPI.Load();
+
 			if (settings.autoHost)
 			{
 				startServer(settings);
