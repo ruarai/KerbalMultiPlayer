@@ -80,7 +80,7 @@ namespace KMPServer
         {
             Log.Debug("Initializing {0}",FileName);
 
-            Invoke("PluginEntry");
+            Invoke("PluginEntry");//invoke the entry method to allow for loading and stuff
         }
 
         public object Invoke(string methodName)
@@ -93,7 +93,7 @@ namespace KMPServer
             try
             {
                 var method = FindMethod(methodName);
-                return method != null ? method.Invoke(null, parameters) : null;
+                return (method != null) ? method.Invoke(null, parameters) : null;
             }
             catch (Exception e)
             {
