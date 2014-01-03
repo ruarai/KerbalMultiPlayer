@@ -49,5 +49,23 @@ namespace PluginExample
             }
             return false;
         }
+
+        //Every non-command chat message sent by a client
+        public static bool OnClientChat(Client cl, string input)
+        {
+            //log to chat
+            Log.Chat(cl.username, input);
+
+            //do standard formatting
+            string full_message = string.Format("<{0}> {1}", cl.username,input);
+
+            //make everyone LOUD
+            full_message = full_message.ToUpper();
+
+            //Send the chat message to all other clients
+            ServerMain.server.sendTextMessageToAll(full_message);
+
+            return true;//Dont continue with standard formatting
+        }
     }
 }

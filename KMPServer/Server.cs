@@ -2473,6 +2473,8 @@ namespace KMPServer
 					}
                 }
 
+                if ((bool)ServerPluginAPI.ReturnIfEqual("OnClientChat", true, false, cl, message_text)) return;
+
                 if (settings.profanityFilter)
                     message_text = WashMouthWithSoap(message_text);
 
@@ -2487,7 +2489,7 @@ namespace KMPServer
             catch (NullReferenceException) { }
         }
 
-        private string WashMouthWithSoap(string message_text)
+        public string WashMouthWithSoap(string message_text)
         {
             var msg = message_text;
 
@@ -2608,7 +2610,7 @@ namespace KMPServer
             cl.queueOutgoingMessage(KMPCommon.ServerMessageID.HANDSHAKE, data_bytes);
         }
 
-        private void sendServerMessageToAll(String message, Client exclude = null)
+        public void sendServerMessageToAll(String message, Client exclude = null)
         {
             UnicodeEncoding encoder = new UnicodeEncoding();
             byte[] message_bytes = buildMessageArray(KMPCommon.ServerMessageID.SERVER_MESSAGE, encoder.GetBytes(message));
@@ -2620,13 +2622,13 @@ namespace KMPServer
             Log.Debug("[Server] message sent to all.");
         }
 
-        private void sendServerMessage(Client cl, String message)
+        public void sendServerMessage(Client cl, String message)
         {
             UnicodeEncoding encoder = new UnicodeEncoding();
             cl.queueOutgoingMessage(KMPCommon.ServerMessageID.SERVER_MESSAGE, encoder.GetBytes(message));
         }
 
-        private void sendTextMessageToAll(String message, Client exclude = null)
+        public void sendTextMessageToAll(String message, Client exclude = null)
         {
             UnicodeEncoding encoder = new UnicodeEncoding();
             byte[] message_bytes = buildMessageArray(KMPCommon.ServerMessageID.TEXT_MESSAGE, encoder.GetBytes(message));
@@ -3777,12 +3779,12 @@ namespace KMPServer
             }
         }
 
-        private bool isAdmin(String username)
+        public bool isAdmin(String username)
         {
             return settings.admins.Contains(username);
         }
 		
-		private int activeClientCount()
+		public int activeClientCount()
 		{
 			return clients.Where(cl => cl.isReady).Count();
 		}
