@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Reflection;
 using System.IO;
 
@@ -108,12 +107,9 @@ namespace KMPServer
         {
             foreach (var type in Assembly.GetTypes())
             {
-                foreach (var method in type.GetMethods())
+                foreach (var method in type.GetMethods().Where(method => method.IsStatic && method.Name == methodName))
                 {
-                    if (method.IsStatic && method.Name == methodName)
-                    {
-                        return method;
-                    }
+                    return method;
                 }
             }
             return null;

@@ -497,6 +497,7 @@ namespace KMPServer
                     backupDatabase();
                 }
 
+                ServerPluginAPI.InvokeAll("OnUpdate");
                 Thread.Sleep(SLEEP_TIME);
             }
 
@@ -504,6 +505,9 @@ namespace KMPServer
             stopwatch.Stop();
 
             Log.Info("Server session ended.");
+
+            ServerPluginAPI.InvokeAll("OnServerStop");
+
             if (quit) { Log.Info("Quitting"); Thread.Sleep(1000); Environment.Exit(0); }
 
         }

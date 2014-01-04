@@ -10,10 +10,21 @@ namespace PluginExample
             Log.Debug("Plugin example loaded.");
         }
 
-        //Triggered when server starts
+        //Triggered when server starts (before threads are started, but after some configuration is loaded)
         public static void OnServerStart()
         {
             Log.Debug("Plugin example sees server start!");
+        }
+
+        //Triggered when server stops
+        public static void OnServerStop()
+        {
+            Log.Debug("Plugin example sees server stop!");
+        }
+
+        //Triggered when server updates (dont use for most things, as this updates every 10ms)
+        public static void OnServerUpdate()
+        {
         }
 
         //Commands enter whilst server is running
