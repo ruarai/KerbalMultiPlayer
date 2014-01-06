@@ -56,9 +56,9 @@ namespace PluginExample
             {
                 ServerMain.server.markClientForDisconnect(cl,"You got kicked by a plugin!");
                 ServerMain.server.sendTextMessageToAdmins(cl.username + " was kicked by a plugin.");
-                return true;
+                return true;//Report to the command API that this command has been handled and no "command not found" message will be sent
             }
-            return false;
+            return false;//report that this plugin didnt handle this command
         }
 
         //Every non-command chat message sent by a client
