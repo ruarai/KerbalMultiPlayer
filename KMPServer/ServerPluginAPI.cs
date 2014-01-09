@@ -75,11 +75,21 @@ namespace KMPServer
         public Assembly Assembly;
         public string FileName;
 
+        private static List<MethodInfo> methods = new List<MethodInfo>();
+
         public void Initialize()
         {
             Log.Debug("Initializing {0}",FileName);
 
-            Invoke("PluginEntry");//invoke the entry method to allow for loading and stuff
+            foreach (var type in Assembly.GetTypes())//this is a lot faster i think
+            {
+                foreach (var method in type.GetMethods().Where(method => method.IsStatic))
+                {
+                    methods.Add(method);
+                }
+            }
+
+            Invoke("PluginEntry");//invoke the entry method to allow for loading 
         }
 
         public object Invoke(string methodName)
@@ -103,16 +113,9 @@ namespace KMPServer
         }
         
 
-        private MethodInfo FindMethod(string methodName)
+        private static MethodInfo FindMethod(string methodName)
         {
-            foreach (var type in Assembly.GetTypes())
-            {
-                foreach (var method in type.GetMethods().Where(method => method.IsStatic && method.Name == methodName))
-                {
-                    return method;
-                }
-            }
-            return null;
+            return methods.FirstOrDefault(m => m.Name == methodName);
         }
     }
 }
