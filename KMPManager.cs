@@ -5,17 +5,62 @@ using System.Text;
 using UnityEngine;
 using System.Xml.Serialization;
 using System.Collections;
+using System.Threading;
 
 namespace KMP
 {
+
     public class Bootstrap : KSP.Testing.UnitTest {
         public Bootstrap() {
 			if (KMPManager.GameObjectInstance == null)
 			{
-				Debug.Log("*** KMP version " + KMPCommon.PROGRAM_VERSION + " started");
+				Log.Info("*** KMP version " + KMPCommon.PROGRAM_VERSION + " started");
 				KMPManager.GameObjectInstance = new GameObject("KMPManager", typeof(KMPManager));
 				UnityEngine.Object.DontDestroyOnLoad(KMPManager.GameObjectInstance);
 			}
+        }
+    }
+
+    public class LoadedFileInfo
+    {
+        /// <summary>
+        /// The full absolute path on this computer. Uses the local system's directory separator character ('/' for Unix, '\' for Windows).
+        /// </summary>
+        public string FullPath;
+
+        /// <summary>
+        /// The relative path starting at the KSP main directory. Uses Unix directory separator ('/') so it will match the server's mod config file.
+        /// </summary>
+        public string LoadedPath;
+
+        /// <summary>
+        /// The directory that this mod has been loaded into (usually 'GameData', but could be 'Plugins' or 'Parts').
+        /// </summary>
+        public string ModDirectory;
+
+        /// <summary>
+        /// The relative path starting in the 'GameData', 'Plugins', or 'Parts' directory (will not have that directory name included). Uses Unix directory separator ('/') so it will match the server's mod config file.
+        /// </summary>
+        public string ModPath;
+
+        /// <summary>
+        /// The SHA256 hash of this file.
+        /// </summary>
+        public string SHA256;
+
+        public LoadedFileInfo(string filepath) {
+            FullPath = filepath.Replace('\\', '/');
+            string location = new System.IO.DirectoryInfo(KSPUtil.ApplicationRootPath).FullName;
+            LoadedPath = filepath.Substring(location.Length).Replace('\\', '/');
+            ModPath = LoadedPath.Substring(LoadedPath.IndexOf('/')+1); // +1 is to cut off remaining directory separator character
+            ModDirectory = LoadedPath.Substring(0, LoadedPath.IndexOf('/'));
+        }
+
+        public void ComputeSHA(System.IO.FileStream stream)
+        {
+            System.Security.Cryptography.SHA256Managed sha = new System.Security.Cryptography.SHA256Managed();
+            byte[] hash = sha.ComputeHash(stream);
+            SHA256 = BitConverter.ToString(hash).Replace("-", String.Empty);
         }
     }
 	
@@ -26,7 +71,7 @@ namespace KMP
 		{
 			//Initialize client
 			KMPClientMain.InitMPClient(this);
-			Debug.Log("Client Initialized.");
+			Log.Debug("Client Initialized.");
 		}
 		
 		public struct VesselEntry
@@ -48,6 +93,40 @@ namespace KMP
 			public Guid vesselID;
 		}
 
+        public class OutputData
+        {
+            public String output;
+        }
+        public class ModFileStream
+        {
+            public LoadedFileInfo File;
+            public System.IO.FileStream Stream;
+            public OutputData outputData;
+
+            public void HandleHash(System.Object state)
+            {
+                outputData.output = "";
+                File.ComputeSHA(Stream);
+                LoadedModfiles.Add(File); // add all data about this file to the mod file list
+                try
+                {
+                    Stream.Unlock(0, 0); // unlock the file once it's no longer needed
+                }
+                catch (Exception e)
+                {
+                    outputData.output += "Unable to unlock " + File.ModPath + ", " + e.Message + ", continuing...";
+                }
+                Stream.Close();
+                Stream.Dispose();
+                outputData.output += "Added and hashed: " + File.ModPath + "=" + File.SHA256;
+				if (Interlocked.Decrement(ref numberOfFilesToCheck) == 0)
+				{
+					Log.Debug("All SHA hashing completed!");
+					ShaFinishedEvent.Set();
+				}
+            }
+        }
+
 		//Singleton
 
 		public static GameObject GameObjectInstance;
@@ -55,6 +134,8 @@ namespace KMP
 		//Properties
 
 		public const String GLOBAL_SETTINGS_FILENAME = "globalsettings.txt";
+
+        public const int MAX_SHA_THREADS = 20;
 
 		public const float INACTIVE_VESSEL_RANGE = 2500.0f;
 		public const float DOCKING_TARGET_RANGE = 200.0f;
@@ -67,24 +148,21 @@ namespace KMP
 		public const float GLOBAL_SETTINGS_SAVE_INTERVAL = 10.0f;
         public const double SAFETY_BUBBLE_CEILING = 35000d;
 		public const float SCENARIO_UPDATE_INTERVAL = 30.0f;
-
-		public const int INTEROP_MAX_QUEUE_SIZE = 64;
-		public const float INTEROP_WRITE_INTERVAL = 0.333f;
-		public const float INTEROP_WRITE_TIMEOUT = 6.0f;
 		
 		public const float FULL_PROTOVESSEL_UPDATE_TIMEOUT = 45f;
 
 		public const double PRIVATE_VESSEL_MIN_TARGET_DISTANCE = 500d;
 		
 		//Rendezvous smoothing
-		public const double SMOOTH_RENDEZ_UPDATE_MAX_DIFFPOS_SQRMAG_INCREASE_SCALE = 25d;
-		public const double SMOOTH_RENDEZ_UPDATE_MAX_DIFFVEL_SQRMAG_INCREASE_SCALE = 25d;
+		public const double SMOOTH_RENDEZ_UPDATE_MAX_DIFFPOS_SQRMAG_INCREASE_SCALE = 50d;
+		public const double SMOOTH_RENDEZ_UPDATE_MAX_DIFFVEL_SQRMAG_INCREASE_SCALE = 50d;
 		public const double SMOOTH_RENDEZ_UPDATE_EXPIRE = 7.5d;
-		public const double SMOOTH_RENDEZ_UPDATE_MIN_DELAY = 0.20d;
-		public const int ALLOW_RENDEZ_OBT_UPDATE_LIMIT = 20;
-		public const double RENDEZ_OBT_UPDATE_RELPOS_MIN_SQRMAG = 10000d;
-		public const double RENDEZ_OBT_UPDATE_RELVEL_MIN_SQRMAG = 10000d;
-		public const double RENDEZ_OBT_UPDATE_SCALE_FACTOR = 0.45d;
+		public const double SMOOTH_RENDEZ_UPDATE_MIN_DELAY = 0.1d;
+		
+		public const int ALLOW_RENDEZ_OBT_UPDATE_LIMIT = 100;
+		public const double RENDEZ_OBT_UPDATE_RELPOS_MIN_SQRMAG = 40000d;
+		public const double RENDEZ_OBT_UPDATE_RELVEL_MIN_SQRMAG = 40000d;
+		public const double RENDEZ_OBT_UPDATE_SCALE_FACTOR = 0.40d;
 		
 		public const ControlTypes BLOCK_ALL_CONTROLS = ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.ACTIONS_ALL | ControlTypes.EVA_INPUT | ControlTypes.TIMEWARP | ControlTypes.MISC | ControlTypes.GROUPS_ALL | ControlTypes.CUSTOM_ACTION_GROUPS;
 		
@@ -98,8 +176,8 @@ namespace KMP
 		public SortedDictionary<String, VesselStatusInfo> playerStatus = new SortedDictionary<string, VesselStatusInfo>();
 		public RenderingManager renderManager;
 		public PlanetariumCamera planetariumCam;
+        public static List<LoadedFileInfo> LoadedModfiles;
 
-		public Queue<byte[]> interopOutQueue = new Queue<byte[]>();
 		public Queue<byte[]> interopInQueue = new Queue<byte[]>();
 		
 		public static object interopInQueueLock = new object();
@@ -107,14 +185,33 @@ namespace KMP
 		public int gameMode = 0; //0=Sandbox, 1=Career
 		public bool gameCheatsEnabled = false; //Allow built-in KSP cheats
 		public bool gameArrr = false; //Allow private vessels to be taken if other user can successfully dock manually
+        public bool checkAllModFiles = false;
+		public static int numberOfFilesToCheck = 0;
+		public static ManualResetEvent ShaFinishedEvent;
 		
 		private float lastGlobalSettingSaveTime = 0.0f;
 		private float lastPluginDataWriteTime = 0.0f;
 		private float lastPluginUpdateWriteTime = 0.0f;
-		private float lastInteropWriteTime = 0.0f;
 		private float lastKeyPressTime = 0.0f;
 		private float lastFullProtovesselUpdate = 0.0f;
 		private float lastScenarioUpdateTime = 0.0f;
+		private float lastTimeSyncTime = 0.0f;
+		public float lastSubspaceLockChange = 0.0f;
+
+		//NTP-style time syncronize settings
+		private bool isSkewingTime = false;
+		private Int64 offsetSyncTick = 0; //The difference between the servers system clock and ours.
+		private List<Int64> listClientTimeSyncLatency = new List<Int64>(); //Holds old sync time messages so we can filter bad ones
+		private List<Int64> listClientTimeSyncOffset = new List<Int64>(); //Holds old sync time messages so we can filter bad ones
+		public List<float> listClientTimeWarp = new List<float>(); //Holds the average time skew so we can tell the server how badly we are lagging.
+		private int currentSyncTimeReceived = 0; //Number of TIME_SYNC's received
+		private bool isTimeSyncronized;
+		private const Int64 SYNC_TIME_OFFSET_FILTER = 500000; //50 milliseconds, If the new offset varies by more than 50 milliseconds the message is discarded.
+		private const Int64 SYNC_TIME_LATENCY_FILTER = 5000000; //500 milliseconds, Must receive reply within this time or the message is discarded
+		private const float SYNC_TIME_INTERVAL = 30f; //How often to sync time.
+		private const int SYNC_TIME_VALID_COUNT = 4; //Number of SYNC_TIME's to receive until time is valid.
+		private const int MAX_TIME_SYNC_HISTORY = 10; //The last 10 SYNC_TIME's are used for the offset filter.
+		private ScreenMessage skewMessage;
 
 		private Queue<KMPVesselUpdate> vesselUpdateQueue = new Queue<KMPVesselUpdate>();
 		private Queue<KMPVesselUpdate> newVesselUpdateQueue = new Queue<KMPVesselUpdate>();
@@ -128,7 +225,6 @@ namespace KMP
         private bool mappingChatKey = false;
         private bool mappingChatDXToggleKey = false;
 		private bool isGameHUDHidden = false;
-		
 
         PlatformID platform;
 		
@@ -142,7 +238,7 @@ namespace KMP
 		private bool gameRunning = false;
 		private bool activeTermination = false;
 		
-		private bool deferredEditorPartListClear = false;
+		private bool clearEditorPartList = false;
 		
 		//Vessel dictionaries
 		public Dictionary<Guid, Vessel.Situations> sentVessels_Situations = new Dictionary<Guid, Vessel.Situations>();
@@ -173,6 +269,9 @@ namespace KMP
 		
 		public double lastTick = 0d;
 		public double targetTick = 0d;
+		public double skewTargetTick = 0;
+		public long skewServerTime = 0;
+		public float skewSubspaceSpeed = 1f;
 		
 		public Vector3d kscPosition = Vector3d.zero;
 		
@@ -191,8 +290,11 @@ namespace KMP
 
 		private bool configRead = false;
 
-		public double safetyBubbleRadius = 20000d;
+		public double safetyBubbleRadius = 2000d;
 		private bool isVerified = false;
+		private ToolbarButtonWrapper KMPToggleButton;
+		private bool KMPToggleButtonState = true;
+		private bool KMPToggleButtonInitialized;
 		
 		public bool globalUIToggle
 		{
@@ -308,15 +410,15 @@ namespace KMP
 					return;
 				}
 				
-				if (EditorPartList.Instance != null && deferredEditorPartListClear)
+				if (EditorPartList.Instance != null && clearEditorPartList)
 				{
-					deferredEditorPartListClear = false;
+					clearEditorPartList = false;
 					EditorPartList.Instance.Refresh();
 				}
 				
-				if (!syncing && (UnityEngine.Time.realtimeSinceStartup-lastScenarioUpdateTime) >= SCENARIO_UPDATE_INTERVAL)
+				if (syncing) lastScenarioUpdateTime = UnityEngine.Time.realtimeSinceStartup;
+				else if ((UnityEngine.Time.realtimeSinceStartup-lastScenarioUpdateTime) >= SCENARIO_UPDATE_INTERVAL)
 				{
-					lastScenarioUpdateTime = UnityEngine.Time.realtimeSinceStartup;
 					sendScenarios();
 				}
 				
@@ -406,60 +508,7 @@ namespace KMP
 					}
 				}
 
-				//Update universe time
-				try
-				{
-					double currentTick = Planetarium.GetUniversalTime();
-					if (isInFlight && targetTick > currentTick+0.05d)
-					{
-						Log.Debug("Syncing to new time " + targetTick + " from " + Planetarium.GetUniversalTime());
-						if (FlightGlobals.ActiveVessel.situation != Vessel.Situations.PRELAUNCH
-						    && FlightGlobals.ActiveVessel.situation != Vessel.Situations.LANDED
-						    && FlightGlobals.ActiveVessel.situation != Vessel.Situations.SPLASHED)
-						{
-							Vector3d oldObtVel = FlightGlobals.ActiveVessel.obt_velocity;
-							if (FlightGlobals.ActiveVessel.orbit.EndUT > 0)
-							{
-								double lastEndUT =  FlightGlobals.ActiveVessel.orbit.EndUT;
-								while (FlightGlobals.ActiveVessel.orbit.EndUT > 0
-								       && FlightGlobals.ActiveVessel.orbit.EndUT < targetTick
-								       && FlightGlobals.ActiveVessel.orbit.EndUT > lastEndUT
-								       && FlightGlobals.ActiveVessel.orbit.nextPatch != null)
-								{
-									Log.Debug("orbit EndUT < target: " + FlightGlobals.ActiveVessel.orbit.EndUT + " vs " + targetTick);
-									lastEndUT =  FlightGlobals.ActiveVessel.orbit.EndUT;
-									FlightGlobals.ActiveVessel.orbitDriver.orbit = FlightGlobals.ActiveVessel.orbit.nextPatch;
-									FlightGlobals.ActiveVessel.orbitDriver.UpdateOrbit();
-									if (FlightGlobals.ActiveVessel.orbit.referenceBody == null) FlightGlobals.ActiveVessel.orbit.referenceBody = FlightGlobals.Bodies.Find(b => b.name == "Sun");
-									Log.Debug("updated to next patch");
-								}
-							}
-							try
-				            {
-				                OrbitPhysicsManager.HoldVesselUnpack(1);
-				            }
-				            catch (NullReferenceException e)
-				            {
-                        Log.Debug("Exception thrown in updateStep(), catch 2, Exception: {0}", e.ToString());
-				            }
-							//Krakensbane shift to new orbital location
-							if (targetTick > currentTick+2.5d //if badly out of sync
-							    && !(FlightGlobals.ActiveVessel.orbit.referenceBody.atmosphere && FlightGlobals.ActiveVessel.orbit.altitude < FlightGlobals.ActiveVessel.orbit.referenceBody.maxAtmosphereAltitude)) //and not in atmo
-							{
-								Log.Debug("Krakensbane shift");
-								Vector3d diffPos = FlightGlobals.ActiveVessel.orbit.getPositionAtUT(targetTick) - FlightGlobals.ship_position;
-								foreach (Vessel otherVessel in FlightGlobals.Vessels.Where(v => v.packed == false && (v.id != FlightGlobals.ActiveVessel.id || (v.loaded && Vector3d.Distance(FlightGlobals.ship_position,v.GetWorldPos3D()) < INACTIVE_VESSEL_RANGE))))
-		                			otherVessel.GoOnRails();
-								getKrakensbane().setOffset(diffPos);
-								//Update velocity
-								FlightGlobals.ActiveVessel.ChangeWorldVelocity((-1 * oldObtVel) + FlightGlobals.ActiveVessel.orbitDriver.orbit.getOrbitalVelocityAtUT(targetTick).xzy);
-	            				FlightGlobals.ActiveVessel.orbitDriver.vel = FlightGlobals.ActiveVessel.orbit.vel;
-							}
-						}
-						Planetarium.SetUniversalTime(targetTick);
-						Log.Debug("sync completed");
-					}
-				} catch (Exception e) { Log.Debug("Exception thrown in updateStep(), catch 3, Exception: {0}", e.ToString()); Log.Debug("error during sync: " + e.Message + " " + e.StackTrace); }
+				krakensBaneWarp();
 
 				writeUpdates();
 				
@@ -478,7 +527,10 @@ namespace KMP
 					else 
 					{
 						//Clear locks
-						InputLockManager.ClearControlLocks();
+						if (!KMPChatDX.showInput)
+						{
+							InputLockManager.ClearControlLocks();
+						}
 						unlockCrewGUI();
 					}
 					checkRemoteVesselIntegrity();
@@ -534,7 +586,14 @@ namespace KMP
 				
 				foreach (String key in delete_list)
 					playerStatus.Remove(key);
-				
+
+				//Queue a time sync if needed
+				if (UnityEngine.Time.realtimeSinceStartup > lastTimeSyncTime + SYNC_TIME_INTERVAL) {
+					SyncTime();
+				}
+
+				//Do the Phys-warp NTP time sync dance.
+				SkewTime();
 				
 				//Prevent cases of remaining unfixed NREs from remote vessel updates from creating an inconsistent game state
 				if (HighLogic.fetch.log.Count > 500 && isInFlight && !syncing)
@@ -622,8 +681,7 @@ namespace KMP
 		
 		private void writeUpdates()
 		{
-			if ((UnityEngine.Time.realtimeSinceStartup - lastPluginUpdateWriteTime) > updateInterval
-				&& (Time.realtimeSinceStartup - lastInteropWriteTime) < INTEROP_WRITE_TIMEOUT)
+			if ((UnityEngine.Time.realtimeSinceStartup - lastPluginUpdateWriteTime) > updateInterval)
 			{
 				writePluginUpdate();
 				lastPluginUpdateWriteTime = UnityEngine.Time.realtimeSinceStartup;
@@ -633,13 +691,6 @@ namespace KMP
 			{
 				writePluginData();
 				lastPluginDataWriteTime = UnityEngine.Time.realtimeSinceStartup;
-			}
-
-			//Write interop
-			if ((UnityEngine.Time.realtimeSinceStartup - lastInteropWriteTime) > INTEROP_WRITE_INTERVAL)
-			{
-				if (writePluginInterop())
-					lastInteropWriteTime = UnityEngine.Time.realtimeSinceStartup;
 			}
 
 			//Save global settings periodically
@@ -742,7 +793,7 @@ namespace KMP
 				if (String.IsNullOrEmpty(FlightGlobals.ActiveVessel.vesselName.Trim())) FlightGlobals.ActiveVessel.vesselName = "Unknown";
 				my_status.vesselName = FlightGlobals.ActiveVessel.vesselName;
 				my_status.lastUpdateTime = UnityEngine.Time.realtimeSinceStartup;
-				
+
 				if (playerStatus.ContainsKey(playerName))
 					playerStatus[playerName] = my_status;
 				else
@@ -940,6 +991,7 @@ namespace KMP
 		private void sendRemoveVesselMessage(Vessel vessel, bool isDocking = false)
 		{
 			Log.Debug("sendRemoveVesselMessage");
+			if (vessel == null) return;
 			KMPVesselUpdate update = getVesselUpdate(vessel);
 			update.situation = Situation.DESTROYED;
 			update.state = FlightGlobals.ActiveVessel.id == vessel.id ? State.ACTIVE : State.INACTIVE;
@@ -965,14 +1017,18 @@ namespace KMP
 		private void sendScenarios()
 		{
 			Log.Debug("sendScenarios");
-			double tick = Planetarium.GetUniversalTime();
-			foreach (ProtoScenarioModule proto in HighLogic.CurrentGame.scenarios)
+			if (!syncing)
 			{
-				if (proto != null && proto.moduleName != null && proto.moduleRef != null)
+				lastScenarioUpdateTime = UnityEngine.Time.realtimeSinceStartup;
+				double tick = Planetarium.GetUniversalTime();
+				foreach (ProtoScenarioModule proto in HighLogic.CurrentGame.scenarios)
 				{
-					KMPScenarioUpdate update = new KMPScenarioUpdate(proto.moduleName, proto.moduleRef, tick);
-					byte[] update_bytes = KSP.IO.IOUtils.SerializeToBinary(update);
-					enqueuePluginInteropMessage(KMPCommon.PluginInteropMessageID.SCENARIO_UPDATE, update_bytes);
+					if (proto != null && proto.moduleName != null && proto.moduleRef != null)
+					{
+						KMPScenarioUpdate update = new KMPScenarioUpdate(proto.moduleName, proto.moduleRef, tick);
+						byte[] update_bytes = KSP.IO.IOUtils.SerializeToBinary(update);
+						enqueuePluginInteropMessage(KMPCommon.PluginInteropMessageID.SCENARIO_UPDATE, update_bytes);
+					}
 				}
 			}
 		}
@@ -1051,6 +1107,8 @@ namespace KMP
 				}
                 if (!vessel.packed) serverVessels_PartCounts[vessel.id] = vessel.Parts.Count;
 			}
+			
+			if (isInSafetyBubble(vessel.GetWorldPos3D(),vessel.mainBody,vessel.altitude)) update.clearProtoVessel();
 			
 			//Track vessel situation
 			sentVessels_Situations[vessel.id] = vessel.situation;
@@ -1473,6 +1531,16 @@ namespace KMP
 			StartCoroutine(killVesselOnNextUpdate(oldVessel));
 		}
 		
+		private IEnumerator<WaitForFixedUpdate> setNewVesselNotInPresent(Vessel vessel)
+		{
+			yield return new WaitForFixedUpdate();
+			serverVessels_InPresent[vessel.id] = false;
+			foreach (Part part in vessel.Parts)
+			{
+				setPartOpacity(part,0.3f);
+			}
+		}
+		
 		private IEnumerator<WaitForFixedUpdate> restoreVesselState(Vessel vessel, Vector3 newWorldPos, Vector3 newOrbitVel)
 		{
 			yield return new WaitForFixedUpdate();
@@ -1627,22 +1695,144 @@ namespace KMP
 			}
 		}
 		
+		/// <summary>
+		/// Determines if a scenario module with the specified name exists already. Only checks the name.
+		/// This is used to determine when the scenarios list was not cleared properly (creating a new game does not seem to clear the list - it only sets the modules'
+		/// moduleRefs to null, which caused failure to sync on career servers, by creating another two modules and then attempting to write data into all four,
+		/// and might have caused career mode on non-career servers if you weren't restarting KSP after exiting career servers).
+		/// </summary>
+		/// <param name="modName">The module name, such as "ResearchAndDevelopment"</param>
+		/// <returns></returns>
+		private bool HasModule(string modName)
+		{
+			Game g = HighLogic.CurrentGame;
+			bool retval = false;
+
+			if (g == null)
+			{
+				Log.Warning("HasModule called when there is no current game.");
+			}
+			else if (g.scenarios.Count > 0)
+			{
+				for (int i = 0; i < g.scenarios.Count; i++)
+				{
+					ProtoScenarioModule proto = g.scenarios[i];
+					if (proto != null)
+					{
+						if (proto.moduleName.CompareTo(modName) == 0)
+						{
+							retval = true;
+						}
+					}
+					else
+					{
+						Log.Warning("Null protoScenario found by HasModule!");
+					}
+				}
+			}
+			return retval;
+		}
+		
+		/// <summary>
+		/// Log current game science, and log some debug information.
+		/// Logs the science amount, or -1 if there is no current game, or no scenarios, or no R&D proto scenario module.
+		/// This was used for debugging to figure out what and where things were going wrong with connecting after disconnecting (#578, #579).
+		/// </summary>
+		private void LogScience()
+		{
+			Game g = HighLogic.CurrentGame;
+			if (g == null)
+			{
+				Log.Debug("No current game.");
+				return;
+			}
+			Log.Debug("Game status=" + g.Status + " modes=" + g.Mode + " IsResumable=" + g.IsResumable() + " startScene=" + g.startScene+" NumScenarios="+g.scenarios.Count);
+			float science = -1;
+			if (g.scenarios.Count > 0)
+			{
+				for (int i = 0; i < g.scenarios.Count; i++)
+				{
+					ProtoScenarioModule proto = g.scenarios[i];
+					if (proto != null)
+					{
+						Log.Debug("g.scenarios[" + i + "].moduleName=" + g.scenarios[i].moduleName + ", and moduleRef=" + (g.scenarios[i].moduleRef != null ? g.scenarios[i].moduleRef.ClassName : "null"));
+						if (proto.moduleRef != null && proto.moduleRef is ResearchAndDevelopment)
+						{
+							ResearchAndDevelopment rd = (ResearchAndDevelopment)proto.moduleRef;
+							if (science > -1)
+							{
+								//This was happening later on when there were four "scenarios" and the ones with null moduleRefs had somehow been replaced by actual moduleRefs.
+								//Upon trying to handle another science update when there were two valid R&D moduleRefs in scenarios,
+								//KSP/KMP exploded causing the desync which triggered the disconnect and message to restart KSP (the bug symptoms).
+								//The root cause, of course, was that scenarios was never cleared properly. That is fixed now.
+								Log.Error("More than one ResearchAndDevelopment scenario module in the game! Science was already " + science + ", now we've found another which says it is " + rd.Science + "!");
+							}
+							science = rd.Science;
+						}
+						else if (proto.moduleName.CompareTo("ResearchAndDevelopment") == 0)
+						{
+							//This was happening - after disconnecting from a career mode server, then making a new game to connect again, 
+							//there would already be two "scenarios" - both with null moduleRefs - 
+							//BEFORE we had tried to add two for career mode.
+							Log.Error("ProtoScenarioModule claims to be a ResearchAndDevelopment but contains no such thing! moduleRef is " + (proto.moduleRef != null ? proto.moduleRef.ClassName : "null"));
+						}
+					}
+					else
+					{
+						Log.Debug("Null protoScenario!");
+					}
+				}
+			}
+			else
+			{
+				Log.Debug("No scenarios.");
+			}
+			if (science > -1)
+			{
+				Log.Debug("Science = " + science);
+			}
+			else if (g.scenarios.Count > 0)
+			{
+				Log.Debug("No ResearchAndDevelopment scenario modules.");
+			}
+		}
+		
 		private void handleScenarioUpdate(object obj)
 		{
 			if (obj is KMPScenarioUpdate)
 			{
 				KMPScenarioUpdate update = (KMPScenarioUpdate) obj;
+				bool loaded = false;
 				foreach (ProtoScenarioModule proto in HighLogic.CurrentGame.scenarios)
 				{
 					if (proto != null && proto.moduleName == update.name && proto.moduleRef != null && update.getScenarioNode() != null)
 					{
-						Log.Debug("Loading scenario data: " + update.name);
-						proto.moduleRef.Load(update.getScenarioNode());
+						Log.Debug("Loading scenario data for existing module: " + update.name);
+						if (update.name == "ResearchAndDevelopment")
+						{
+							ResearchAndDevelopment rd = (ResearchAndDevelopment) proto.moduleRef;
+							Log.Debug("pre-R&D: {0}", rd.Science);
+						}
+						try
+						{
+							proto.moduleRef.Load(update.getScenarioNode());
+						} catch (Exception e) { KMPClientMain.sendConnectionEndMessage("Error in handling scenario data. Please restart your client. "); Log.Debug(e.ToString());  }
+						if (update.name == "ResearchAndDevelopment")
+						{
+							ResearchAndDevelopment rd = (ResearchAndDevelopment) proto.moduleRef;
+							Log.Debug("post-R&D: {0}", rd.Science);
+						}
+						loaded = true;
 						break;
 					}
 				}
-				if (EditorPartList.Instance != null) EditorPartList.Instance.Refresh();
-				else deferredEditorPartListClear = true;
+				if (!loaded)
+				{
+					Log.Debug("Loading new scenario module data: " + update.name);
+					ProtoScenarioModule newScenario = new ProtoScenarioModule(update.getScenarioNode());
+					newScenario.Load(ScenarioRunner.fetch);
+				}
+				clearEditorPartList = true;
 			}
 		}
 		
@@ -1905,7 +2095,7 @@ namespace KMP
 														serverVessels_InPresent[vessel_update.id] = true;
 														foreach (Part part in extant_vessel.Parts)
 														{
-															part.setOpacity(1f);
+															setPartOpacity(part,1f);
 														}
 													}
 													
@@ -2040,7 +2230,7 @@ namespace KMP
 														serverVessels_InPresent[vessel_update.id] = false;
 														foreach (Part part in extant_vessel.Parts)
 														{
-															part.setOpacity(0.3f);
+															setPartOpacity(part,0.3f);
 														}
 													}
 													
@@ -2462,6 +2652,18 @@ namespace KMP
 			return !killedForCollision;
 		}
 		
+		private void setPartOpacity(Part part, float opacity)
+		{
+			try
+			{
+				if (part.vessel != null)
+				{
+					part.setOpacity(opacity);
+				}
+			}
+			catch (Exception e) { Log.Debug("Exception thrown in setPartOpacity(), Exception: {0}", e.ToString()); }
+		}
+		
 		private bool checkOrbitForCollision(Orbit orbit, double tick, double fromTick)
 		{
 			CelestialBody body = orbit.referenceBody;
@@ -2652,11 +2854,7 @@ namespace KMP
 						}
 						else
 						{
-							serverVessels_InPresent[update.id] = false;
-							foreach (Part part in created_vessel.Parts)
-							{
-								part.setOpacity(0.3f);
-							}
+							StartCoroutine(setNewVesselNotInPresent(created_vessel));
 						}
 					}
 				}
@@ -2725,79 +2923,30 @@ namespace KMP
 					{
 						byte[] bytes;
 						bytes = interopInQueue.Dequeue();
-						if (bytes != null && bytes.Length > 4)
+
+						//Read the message id
+						int id_int = KMPCommon.intFromBytes(bytes, 0);
+		
+						KMPCommon.ClientInteropMessageID id = KMPCommon.ClientInteropMessageID.NULL;
+						if (id_int >= 0 && id_int < Enum.GetValues(typeof(KMPCommon.ClientInteropMessageID)).Length)
+							id = (KMPCommon.ClientInteropMessageID)id_int;
+		
+						//Read the length of the message data
+						int data_length = KMPCommon.intFromBytes(bytes, 4);
+		
+						if (data_length <= 0)
+							handleInteropMessage(id, null);
+						else
 						{
-							//Read the file-format version
-							int file_version = KMPCommon.intFromBytes(bytes, 0);
-			
-							if (file_version != KMPCommon.FILE_FORMAT_VERSION)
-							{
-								//Incompatible client version
-								Debug.LogError("KMP Client incompatible with plugin");
-								return;
-							}
-			
-							//Parse the messages
-							int index = 4;
-							while (index < bytes.Length - KMPCommon.INTEROP_MSG_HEADER_LENGTH)
-							{
-								//Read the message id
-								int id_int = KMPCommon.intFromBytes(bytes, index);
-			
-								KMPCommon.ClientInteropMessageID id = KMPCommon.ClientInteropMessageID.NULL;
-								if (id_int >= 0 && id_int < Enum.GetValues(typeof(KMPCommon.ClientInteropMessageID)).Length)
-									id = (KMPCommon.ClientInteropMessageID)id_int;
-			
-								//Read the length of the message data
-								int data_length = KMPCommon.intFromBytes(bytes, index + 4);
-			
-								index += KMPCommon.INTEROP_MSG_HEADER_LENGTH;
-			
-								if (data_length <= 0)
-									handleInteropMessage(id, null);
-								else if (data_length <= (bytes.Length - index))
-								{
-									//Copy the message data
-									byte[] data = new byte[data_length];
-									Array.Copy(bytes, index, data, 0, data.Length);
-			
-									handleInteropMessage(id, data);
-								}
-			
-								if (data_length > 0)
-									index += data_length;
-							}
+							//Copy the message data
+							byte[] data = new byte[data_length];
+							Array.Copy(bytes, 8, data, 0, data.Length);
+							handleInteropMessage(id, data);
 						}
 					}
 				}
 				catch (Exception e) { Log.Debug("Exception thrown in processClientInterop(), catch 1, Exception: {0}", e.ToString()); }
 			}
-		}
-
-		private bool writePluginInterop()
-		{
-			bool success = false;
-
-			if (interopOutQueue.Count > 0 )
-			{
-				try
-				{
-					while (interopOutQueue.Count > 0)
-					{
-						byte[] message;
-						message = interopOutQueue.Dequeue();
-						KSP.IO.MemoryStream ms = new KSP.IO.MemoryStream();
-					    ms.Write(KMPCommon.intToBytes(KMPCommon.FILE_FORMAT_VERSION), 0, 4);
-						ms.Write(message,0,message.Length);
-
-						KMPClientMain.acceptPluginInterop(ms.ToArray());
-					}
-					success = true;
-				}
-				catch (Exception e) { Log.Debug("Exception thrown in writePluginInterop(), catch 1, Exception: {0}", e.ToString()); }
-			}
-
-			return success;
 		}
 
 		private void handleInteropMessage(KMPCommon.ClientInteropMessageID id, byte[] data)
@@ -2910,11 +3059,7 @@ namespace KMP
 			if (data != null)
 				data.CopyTo(message_bytes, KMPCommon.INTEROP_MSG_HEADER_LENGTH);
 
-			interopOutQueue.Enqueue(message_bytes);
-			
-			//Enforce max queue size
-			while (interopOutQueue.Count > INTEROP_MAX_QUEUE_SIZE)
-				interopOutQueue.Dequeue();
+			KMPClientMain.acceptPluginInterop (message_bytes);
 		}
 
 		//Settings
@@ -2947,12 +3092,12 @@ namespace KMP
 			{
 				byte[] serialized = KSP.IO.IOUtils.SerializeToBinary(KMPGlobalSettings.instance);
 				KSP.IO.File.WriteAllBytes<KMPManager>(serialized, GLOBAL_SETTINGS_FILENAME);
-				Debug.Log("Saved Global Settings to file.");
+				Log.Debug("Saved Global Settings to file.");
 			}
 			catch (Exception e)
 			{
         Log.Debug("Exception thrown in saveGlobalSettings(), catch 1, Exception: {0}", e.ToString());
-				Debug.Log(e.Message);
+				Log.Debug(e.Message);
 			}
 		}
 
@@ -2962,7 +3107,6 @@ namespace KMP
 			try
 			{
 				//Deserialize global settings from file
-				//byte[] bytes = KSP.IO.File.ReadAllBytes<KMPManager>(GLOBAL_SETTINGS_FILENAME); //Apparently KSP.IO.File.ReadAllBytes is broken
 				String sPath = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
 				sPath += "/PluginData/KerbalMultiPlayer/";
 				byte[] bytes = System.IO.File.ReadAllBytes(sPath + GLOBAL_SETTINGS_FILENAME);
@@ -3018,26 +3162,27 @@ namespace KMP
 			{
         Log.Debug("Exception thrown in loadGlobalSettings(), catch 1, Exception: {0}", e.ToString());
 				success = false;
-				Debug.Log(e.Message);
+				Log.Debug(e.Message);
 			}
 			catch (System.IO.IOException e)
 			{
         Log.Debug("Exception thrown in loadGlobalSettings(), catch 2, Exception: {0}", e.ToString());
 				success = false;
-				Debug.Log(e.Message);
+                Log.Debug(e.Message);
 			}
 			catch (System.IO.IsolatedStorage.IsolatedStorageException e)
 			{
         Log.Debug("Exception thrown in loadGlobalSettings(), catch 3, Exception: {0}", e.ToString());
 				success = false;
-				Debug.Log(e.Message);
+                Log.Debug(e.Message);
 			}
 			if (!success)
 			{
 				try
 				{
 					KSP.IO.File.Delete<KMPManager>(GLOBAL_SETTINGS_FILENAME);
-				} catch (Exception e) { Log.Debug("Exception thrown in loadGlobalSettings(), catch 4, Exception: {0}", e.ToString()); }
+                }
+                catch (Exception e) { Log.Debug("Exception thrown in loadGlobalSettings(), catch 4, Exception: {0}", e.ToString()); }
 				KMPGlobalSettings.instance = new KMPGlobalSettings();
 			}
 		}
@@ -3050,7 +3195,6 @@ namespace KMP
 			CancelInvoke();
 			InvokeRepeating("updateStep", 1/30.0f, 1/30.0f);
 			loadGlobalSettings();
-
             try
             {
                 platform = Environment.OSVersion.Platform;
@@ -3060,7 +3204,60 @@ namespace KMP
                 Log.Debug("Exception thrown in Awake(), catch 1, Exception: {0}", e.ToString());
                 platform = PlatformID.Unix;
             }
-			Debug.Log("KMP loaded");
+            LoadedModfiles = new List<LoadedFileInfo>();
+            try
+            {
+                List<UrlDir.UrlFile> files = GameDatabase.Instance.root.AllFiles.ToList(); // add all plugin files
+                files.AddRange(GameDatabase.Instance.root.AllConfigFiles); // add all config files
+                List<string> filenames = files.ConvertAll(x => x.fullPath);
+                List<string> ls = System.IO.Directory.GetFiles(KSPUtil.ApplicationRootPath + "GameData", "*.*", System.IO.SearchOption.AllDirectories).ToList(); // add files that weren't immediately loaded (e.g. files that plugins use later)
+                filenames.AddRange(ls);
+                filenames = filenames.ConvertAll(x => new System.IO.DirectoryInfo(x).FullName);
+                filenames = filenames.Distinct(StringComparer.CurrentCultureIgnoreCase).ToList();
+                List<ModFileStream> FileStreams = new List<ModFileStream>();
+                foreach (string file in filenames)
+                {
+                    try
+                    {
+                        ModFileStream Entry = new ModFileStream();
+                        Entry.File = new LoadedFileInfo(file);
+                        Entry.Stream = new System.IO.FileStream(file, System.IO.FileMode.Open);
+                        try
+                        {
+                            Entry.Stream.Lock(0, 0); // lock the file until after it's hashed, so the user can't modify it in the meantime
+                        }
+                        catch (Exception e)
+                        {
+                            Log.Debug("Unable to lock " + Entry.File.ModPath + ", " + e.Message + ", continuing...");
+                        }
+                        FileStreams.Add(Entry);
+                    }
+                    catch (Exception e)
+                    {
+                        Log.Debug("Error in part hashing, 1st section: {0}", e.Message);
+                    }
+                }
+                OutputData[] outputs = new OutputData[FileStreams.Count];
+				ShaFinishedEvent = new ManualResetEvent(false);
+				numberOfFilesToCheck = FileStreams.Count;
+				try {
+                for (int i = 0; i < FileStreams.Count; i++)
+                {
+                    outputs[i] = new OutputData();
+                    FileStreams.ElementAt(i).outputData = outputs[i];
+                    ThreadPool.QueueUserWorkItem(new WaitCallback(FileStreams.ElementAt(i).HandleHash));
+					}
+				}
+                    catch (Exception e)
+                    {
+                        Log.Debug("Error in part hashing, 2nd section: {0}", e.Message);
+                    }
+            }
+            catch (Exception e)
+            {
+                Log.Debug("Exception thrown in Awake(), catch 1, Exception: {0}", e.ToString());
+            }
+			Log.Debug("KMP loaded");
 		}
 		
 		private void Start()
@@ -3215,12 +3412,18 @@ namespace KMP
 				}
 				else
 				{
-					if (!warping) writePrimaryUpdate(); //Ensure server catches any vessel switch before warp
-					warping = true;
-					Log.Debug("warping");
+					if (!warping) {
+						skewServerTime = 0;
+						skewTargetTick = 0;
+						writePrimaryUpdate (); //Ensure server catches any vessel switch before warp
+						Log.Debug("warping");
+					}
+				warping = true;
 				}
-				Log.Debug("sending: " + TimeWarp.CurrentRate);
-				byte[] update_bytes = BitConverter.GetBytes(TimeWarp.CurrentRate);
+				Log.Debug("sending: " + TimeWarp.CurrentRate + ", " + Planetarium.GetUniversalTime());
+				byte[] update_bytes = new byte[12]; //warp rate float (4) + current tick double (8)
+				BitConverter.GetBytes(TimeWarp.CurrentRate).CopyTo(update_bytes, 0);
+				BitConverter.GetBytes(Planetarium.GetUniversalTime()).CopyTo(update_bytes, 4);
 				enqueuePluginInteropMessage(KMPCommon.PluginInteropMessageID.WARPING, update_bytes);
 			}
 		}
@@ -3264,6 +3467,7 @@ namespace KMP
 		
 		public void HandleSyncCompleted()
 		{
+			SyncTime();
 			if (!forceQuit && syncing && !inGameSyncing && gameRunning) Invoke("finishSync",5f);
 			else
 			{
@@ -3296,6 +3500,196 @@ namespace KMP
 				ScreenMessages.PostScreenMessage("Universe synchronized",1f,ScreenMessageStyle.UPPER_RIGHT);
 				StartCoroutine(returnToSpaceCenter());
 				//Disable debug logging once synced unless explicitly enabled
+			}
+		}
+
+		private void krakensBaneWarp(double krakensTick = 0) {
+			if (warping) return;
+		//Update universe time
+		if (krakensTick == 0) {
+			krakensTick = targetTick;
+		}
+		try
+		{
+			double currentTick = Planetarium.GetUniversalTime();
+			//Let SkewTime handle errors smaller than 5s.
+			if (isInFlight && krakensTick > currentTick+5d)
+			{
+				Log.Debug("Syncing to new time " + krakensTick + " from " + Planetarium.GetUniversalTime());
+				if (FlightGlobals.ActiveVessel.situation != Vessel.Situations.PRELAUNCH
+				    && FlightGlobals.ActiveVessel.situation != Vessel.Situations.LANDED
+				    && FlightGlobals.ActiveVessel.situation != Vessel.Situations.SPLASHED)
+				{
+					Vector3d oldObtVel = FlightGlobals.ActiveVessel.obt_velocity;
+					if (FlightGlobals.ActiveVessel.orbit.EndUT > 0)
+					{
+						double lastEndUT =  FlightGlobals.ActiveVessel.orbit.EndUT;
+						while (FlightGlobals.ActiveVessel.orbit.EndUT > 0
+						       && FlightGlobals.ActiveVessel.orbit.EndUT < krakensTick
+						       && FlightGlobals.ActiveVessel.orbit.EndUT > lastEndUT
+						       && FlightGlobals.ActiveVessel.orbit.nextPatch != null)
+						{
+							Log.Debug("orbit EndUT < target: " + FlightGlobals.ActiveVessel.orbit.EndUT + " vs " + krakensTick);
+							lastEndUT =  FlightGlobals.ActiveVessel.orbit.EndUT;
+							FlightGlobals.ActiveVessel.orbitDriver.orbit = FlightGlobals.ActiveVessel.orbit.nextPatch;
+							FlightGlobals.ActiveVessel.orbitDriver.UpdateOrbit();
+							if (FlightGlobals.ActiveVessel.orbit.referenceBody == null) FlightGlobals.ActiveVessel.orbit.referenceBody = FlightGlobals.Bodies.Find(b => b.name == "Sun");
+							Log.Debug("updated to next patch");
+						}
+					}
+					try
+					{
+						OrbitPhysicsManager.HoldVesselUnpack(1);
+					}
+					catch (NullReferenceException e)
+					{
+						Log.Debug("Exception thrown in updateStep(), catch 2, Exception: {0}", e.ToString());
+					}
+					//Krakensbane shift to new orbital location
+					if (krakensTick > currentTick+2.5d //if badly out of sync
+					    && !(FlightGlobals.ActiveVessel.orbit.referenceBody.atmosphere && FlightGlobals.ActiveVessel.orbit.altitude < FlightGlobals.ActiveVessel.orbit.referenceBody.maxAtmosphereAltitude)) //and not in atmo
+					{
+						Log.Debug("Krakensbane shift");
+						Vector3d diffPos = FlightGlobals.ActiveVessel.orbit.getPositionAtUT(krakensTick) - FlightGlobals.ship_position;
+						foreach (Vessel otherVessel in FlightGlobals.Vessels.Where(v => v.packed == false && (v.id != FlightGlobals.ActiveVessel.id || (v.loaded && Vector3d.Distance(FlightGlobals.ship_position,v.GetWorldPos3D()) < INACTIVE_VESSEL_RANGE))))
+							otherVessel.GoOnRails();
+						getKrakensbane().setOffset(diffPos);
+						//Update velocity
+						FlightGlobals.ActiveVessel.ChangeWorldVelocity((-1 * oldObtVel) + FlightGlobals.ActiveVessel.orbitDriver.orbit.getOrbitalVelocityAtUT(krakensTick).xzy);
+						FlightGlobals.ActiveVessel.orbitDriver.vel = FlightGlobals.ActiveVessel.orbit.vel;
+					}
+				}
+				Planetarium.SetUniversalTime(krakensTick);
+				Log.Debug("sync completed");
+			}
+		} catch (Exception e) { Log.Debug("Exception thrown in krakensBaneWarp(), catch 1, Exception: {0}", e.ToString()); Log.Debug("error during sync: " + e.Message + " " + e.StackTrace); }
+		}
+
+		private void SkewTime ()
+		{
+			if (syncing || warping) return;
+
+			if (HighLogic.LoadedScene == GameScenes.EDITOR || HighLogic.LoadedScene == GameScenes.SPH) return; //Time does not advance in the VAB or SPH
+
+			if (!isInFlightOrTracking && isSkewingTime) {
+				Log.Debug ("Stopping skew time");
+				isSkewingTime = false;
+				Time.timeScale = 1f;
+				return;
+			}
+
+
+			//This brings the computers MET timer in to line with the server.
+			if (isTimeSyncronized && skewServerTime != 0 && skewTargetTick != 0) {
+				long timeFromLastSync = (DateTime.UtcNow.Ticks + offsetSyncTick) - skewServerTime;
+				double timeFromLastSyncSeconds = (double)timeFromLastSync / 10000000;
+				double timeFromLastSyncSecondsAdjusted = timeFromLastSyncSeconds * skewSubspaceSpeed;
+				double currentError = Planetarium.GetUniversalTime () - (skewTargetTick + timeFromLastSyncSecondsAdjusted); //Ticks are integers of 100ns, Planetarium camera is a float in seconds.
+				double currentErrorMs = Math.Round (currentError * 1000, 2);
+				double currentErrorS = Math.Round (currentError, 2);
+
+				if (Math.Abs (currentError) > 5) {
+					skewMessage = ScreenMessages.PostScreenMessage ("Time skew fast, error: " + currentErrorS + " seconds.", 4f, ScreenMessageStyle.UPPER_RIGHT);
+					if (isInFlight) {
+						krakensBaneWarp(skewTargetTick + timeFromLastSyncSecondsAdjusted);
+					} else {
+						Planetarium.SetUniversalTime(skewTargetTick + timeFromLastSyncSeconds);
+					}
+					return;
+				}
+
+				//Dynamic warp.
+				float timeWarpRate = (float) Math.Pow(2, -currentError);
+				if ( timeWarpRate > 1.5f ) timeWarpRate = 1.5f;
+				if ( timeWarpRate < 0.5f ) timeWarpRate = 0.5f;
+
+				if (Math.Abs(currentError) > 0.2) {
+					isSkewingTime = true;
+					Time.timeScale = timeWarpRate;
+				}
+
+				if (Math.Abs(currentError) < 0.05 && isSkewingTime) {
+					isSkewingTime = false;
+					Time.timeScale = 1;
+				}
+
+				//Let's give the client a little bit of time to settle before being able to request a different rate.
+				if (UnityEngine.Time.realtimeSinceStartup > lastSubspaceLockChange + 10f) {
+					float requestedRate = (1 / timeWarpRate) * skewSubspaceSpeed;
+					listClientTimeWarp.Add(requestedRate);
+				} else {
+					listClientTimeWarp.Add(skewSubspaceSpeed);
+				}
+
+				//Keeps the last 10 seconds of warp history to report to the server
+				if (listClientTimeWarp.Count > 300) {
+					listClientTimeWarp.RemoveAt(0);
+				}
+
+
+				if (isSkewingTime) {
+					try {
+						skewMessage.duration = 0;
+					}
+					catch (Exception e) {
+						Log.Debug (e.ToString ());
+					}
+					skewMessage = ScreenMessages.PostScreenMessage("Time skew error: " + currentErrorMs + "ms.", 1f, ScreenMessageStyle.UPPER_RIGHT);
+				}
+			}
+		}
+
+		private void SyncTime()
+		{
+			//Have to write the actual time just before sending.
+			lastTimeSyncTime = UnityEngine.Time.realtimeSinceStartup;
+			enqueuePluginInteropMessage(KMPCommon.PluginInteropMessageID.SYNC_TIME, null);
+		}
+
+		public void HandleSyncTimeCompleted(byte[] data)
+		{
+			currentSyncTimeReceived = currentSyncTimeReceived + 1;
+			Int64 clientSend = BitConverter.ToInt64 (data, 0);
+			Int64 serverReceive = BitConverter.ToInt64 (data, 8);
+			Int64 serverSend = BitConverter.ToInt64 (data, 16);
+			Int64 clientReceive = DateTime.UtcNow.Ticks;
+			//Fancy NTP algorithm
+			Int64 clientLatency = (clientReceive - clientSend) - (serverSend - serverReceive);
+			Int64 clientOffset = ((serverReceive - clientSend) + (serverSend - clientReceive))/2;
+
+			//If time is synced, throw out outliers.
+			if (isTimeSyncronized) {
+				Int64 clientOffsetFilter = (Int64)listClientTimeSyncOffset.Average();
+				if (clientLatency < SYNC_TIME_LATENCY_FILTER && Math.Abs(clientOffset-clientOffsetFilter) < SYNC_TIME_OFFSET_FILTER) {
+					listClientTimeSyncOffset.Add (clientOffset);
+					listClientTimeSyncLatency.Add (clientLatency);
+				}
+			//If time is not synced, add all data (as there can be no outliers).
+			} else {
+				listClientTimeSyncOffset.Add(clientOffset);
+				listClientTimeSyncLatency.Add(clientLatency);
+				SyncTime();
+			}
+
+			//If received enough TIME_SYNC messages, set time to syncronized.
+			if (currentSyncTimeReceived >= SYNC_TIME_VALID_COUNT && !isTimeSyncronized) {
+				offsetSyncTick = (Int64)listClientTimeSyncOffset.Average();
+				Int64 latencySyncTick = (Int64)listClientTimeSyncLatency.Average();
+				isTimeSyncronized = true;
+				Log.Debug("Initial client time syncronized: " + (latencySyncTick/10000).ToString() + "ms latency, " + (offsetSyncTick/10000).ToString() + "ms offset");
+			}
+
+			if (listClientTimeSyncOffset.Count > MAX_TIME_SYNC_HISTORY) {
+				listClientTimeSyncOffset.RemoveAt(0);
+			}
+
+			if (listClientTimeSyncLatency.Count > MAX_TIME_SYNC_HISTORY) {
+				listClientTimeSyncLatency.RemoveAt(0);
+			}
+
+			//Update offset timer so the physwrap skew can use it
+			if (isTimeSyncronized) {
+				offsetSyncTick = (Int64)listClientTimeSyncOffset.Average();
 			}
 		}
 
@@ -3341,14 +3735,10 @@ namespace KMP
 				
 				if (FlightDriver.Pause) FlightDriver.SetPause(false);
 				if (gameCheatsEnabled == false) {
-					if (CheatOptions.InfiniteFuel == true)
-						CheatOptions.InfiniteFuel = false;
-					if (CheatOptions.InfiniteEVAFuel == true)
-						CheatOptions.InfiniteEVAFuel = false;
-					if (CheatOptions.InfiniteRCS == true)
-						CheatOptions.InfiniteRCS = false;
-					if (CheatOptions.NoCrashDamage == true)
-						CheatOptions.NoCrashDamage = false;
+					CheatOptions.InfiniteFuel = false;
+					CheatOptions.InfiniteEVAFuel = false;
+					CheatOptions.InfiniteRCS = false;
+					CheatOptions.NoCrashDamage = false;
 					Destroy(FindObjectOfType(typeof(DebugToolbar)));
 				}
 
@@ -3364,19 +3754,23 @@ namespace KMP
 					isGameHUDHidden = !isGameHUDHidden;
 				}
 
-				if (Input.GetKeyDown(KMPGlobalSettings.instance.guiToggleKey) && isGameHUDHidden == false)
+				if (Input.GetKeyDown(KMPGlobalSettings.instance.guiToggleKey) && !isGameHUDHidden && KMPToggleButtonState)
 					KMPInfoDisplay.infoDisplayActive = !KMPInfoDisplay.infoDisplayActive;
 
                 if (Input.GetKeyDown(KMPGlobalSettings.instance.screenshotKey))
                     StartCoroutine(shareScreenshot());
                     
-                if (Input.GetKeyDown(KMPGlobalSettings.instance.screenshotToggleKey) && isGameHUDHidden == false)
+				if (Input.GetKeyDown(KMPGlobalSettings.instance.screenshotToggleKey) && !isGameHUDHidden && KMPToggleButtonState)
 		    KMPScreenshotDisplay.windowEnabled = !KMPScreenshotDisplay.windowEnabled;
 
                 if (Input.GetKeyDown(KMPGlobalSettings.instance.chatTalkKey))
+                {
                     KMPChatDX.showInput = true;
+                    //DISABLE SHIP CONTROL
+                    InputLockManager.SetControlLock(ControlTypes.All,"KMP_ChatActive");
+                }
 
-                if (Input.GetKeyDown(KMPGlobalSettings.instance.chatHideKey) && isGameHUDHidden == false)
+				if (Input.GetKeyDown(KMPGlobalSettings.instance.chatHideKey) && !isGameHUDHidden && KMPToggleButtonState)
                 {
 		    KMPGlobalSettings.instance.chatDXWindowEnabled = !KMPGlobalSettings.instance.chatDXWindowEnabled;
                     if (KMPGlobalSettings.instance.chatDXWindowEnabled) KMPChatDX.enqueueChatLine("Press Chat key (" + (KMPGlobalSettings.instance.chatTalkKey == KeyCode.BackQuote ? "~" : KMPGlobalSettings.instance.chatTalkKey.ToString()) + ") to send a message");
@@ -3462,12 +3856,27 @@ namespace KMP
 
 		public void drawGUI()
 		{
+			//KSP Toolbar integration - Can't chuck it in the bootstrap because Toolbar does not instantate early enough.
+			if (!KMPToggleButtonInitialized) {
+				if (ToolbarButtonWrapper.ToolbarManagerPresent) {
+					KMPToggleButton = ToolbarButtonWrapper.TryWrapToolbarButton ("KMP", "Toggle");
+					KMPToggleButton.TexturePath = "KMP/KMPButton/KMPEnabled";
+					KMPToggleButton.ToolTip = "Toggle KMP Windows";
+					KMPToggleButton.AddButtonClickHandler ((e) =>
+					{
+						KMPToggleButtonState = !KMPToggleButtonState;
+						KMPToggleButton.TexturePath = KMPToggleButtonState ? "KMP/KMPButton/KMPEnabled" : "KMP/KMPButton/KMPDisabled";
+					});
+				}
+				KMPToggleButtonInitialized = true;
+			}
+
 			if (blockConnections && !KMPClientMain.connectionThreadRunning)
 				blockConnections = false;
 
 			if (forceQuit)
 			{
-				Debug.Log("Force quit");
+				Log.Debug("Force quit");
 				forceQuit = false;
 				gameRunning = false;
 				if (HighLogic.LoadedScene != GameScenes.MAINMENU)
@@ -3551,17 +3960,19 @@ namespace KMP
 			KMPVesselLockDisplay.layoutOptions[0] = GUILayout.MaxHeight(KMPVesselLockDisplay.MIN_WINDOW_HEIGHT);
 			KMPVesselLockDisplay.layoutOptions[1] = GUILayout.MaxWidth(KMPVesselLockDisplay.MIN_WINDOW_WIDTH);
 			
-			GUI.skin = HighLogic.Skin;
+			if (!KMPGlobalSettings.instance.useNewUiSkin) {
+				GUI.skin = HighLogic.Skin;
+			}
 			
 			if (!KMPConnectionDisplay.windowEnabled && HighLogic.LoadedScene == GameScenes.MAINMENU) KMPClientMain.clearConnectionState();
 			
 			KMPConnectionDisplay.windowEnabled = (HighLogic.LoadedScene == GameScenes.MAINMENU) && globalUIToggle;
 
             
-            if (KMPGlobalSettings.instance.chatDXWindowEnabled && isGameHUDHidden == false)
+            if (KMPGlobalSettings.instance.chatDXWindowEnabled && !isGameHUDHidden && KMPToggleButtonState)
             {
                 KMPChatDX.windowPos = GUILayout.Window(
-                    999994,
+                    GUIUtility.GetControlID(999994, FocusType.Passive),
                     KMPChatDX.getWindowPos(),
                     chatWindowDX,
                     "",
@@ -3594,7 +4005,7 @@ namespace KMP
               Log.Debug("Exception thrown in drawGUI(), catch 1, Exception: {0}", e.ToString());
         }
 				GUILayout.Window(
-					999996,
+					GUIUtility.GetControlID(999996, FocusType.Passive),
 					KMPConnectionDisplay.windowPos,
 					connectionWindow,
 					"Connection Settings",
@@ -3602,12 +4013,12 @@ namespace KMP
 					);
 			}
 			
-			if (!KMPConnectionDisplay.windowEnabled && KMPClientMain.handshakeCompleted && KMPClientMain.tcpSocket != null)
+			if (!KMPConnectionDisplay.windowEnabled && KMPClientMain.handshakeCompleted && KMPClientMain.tcpClient != null)
 			{
-				if(KMPInfoDisplay.infoDisplayActive && isGameHUDHidden == false)
+				if(KMPInfoDisplay.infoDisplayActive && !isGameHUDHidden && KMPToggleButtonState)
 				{
 					KMPInfoDisplay.infoWindowPos = GUILayout.Window(
-						999999,
+						GUIUtility.GetControlID(999999, FocusType.Passive),
 						KMPInfoDisplay.infoWindowPos,
 						infoDisplayWindow,
 						KMPInfoDisplay.infoDisplayMinimized ? "KMP" : "KerbalMP v"+KMPCommon.PROGRAM_VERSION+" ("+KMPGlobalSettings.instance.guiToggleKey+")",
@@ -3617,7 +4028,7 @@ namespace KMP
 					if (isInFlight && !KMPInfoDisplay.infoDisplayMinimized)
 					{
 						GUILayout.Window(
-							999995,
+							GUIUtility.GetControlID(999995, FocusType.Passive),
 							KMPVesselLockDisplay.windowPos,
 							lockWindow,
 							syncing ? "Bailout" : "Lock",
@@ -3635,10 +4046,10 @@ namespace KMP
       		    KMPGlobalSettings.instance.chatDXWindowEnabled = false;
  		    }
 			
-			if (KMPScreenshotDisplay.windowEnabled)
+			if (KMPScreenshotDisplay.windowEnabled && !isGameHUDHidden && KMPToggleButtonState)
 			{
 				KMPScreenshotDisplay.windowPos = GUILayout.Window(
-					999998,
+					GUIUtility.GetControlID(999998, FocusType.Passive),
 					KMPScreenshotDisplay.windowPos,
 					screenshotWindow,
 					"KerbalMP Viewer (" + KMPGlobalSettings.instance.screenshotToggleKey + ")",
@@ -3649,7 +4060,7 @@ namespace KMP
 //			if (KMPGlobalSettings.instance.chatWindowEnabled)
 //			{
 //				KMPChatDisplay.windowPos = GUILayout.Window(
-//					999997,
+//					GUIUtility.GetControlID(999997, FocusType.Passive),
 //					KMPChatDisplay.windowPos,
 //					chatWindow,
 //					"KerbalMP Chat",
@@ -3714,7 +4125,7 @@ namespace KMP
 					bool quit = GUILayout.Button("Quit",lockButtonStyle);
 					if (quit)
 					{
-						if (KMPClientMain.tcpSocket.Connected) {
+						if (KMPClientMain.tcpClient.Connected) {
 							KMPClientMain.sendConnectionEndMessage("Requested quit during sync");
 						}
 						KMPClientMain.endSession = true;
@@ -3888,6 +4299,9 @@ namespace KMP
 					
 					GUILayout.EndHorizontal();
 
+					KMPGlobalSettings.instance.useNewUiSkin
+						= GUILayout.Toggle(KMPGlobalSettings.instance.useNewUiSkin, "New GUI Skin", GUI.skin.toggle);
+
 					//Key mapping
 					GUILayout.Label("Key-Bindings");
 
@@ -3961,9 +4375,9 @@ namespace KMP
 				KMPClientMain.verifyShipsDirectory();
 				isVerified = true;
 			}
-			if (KMPClientMain.handshakeCompleted && KMPClientMain.tcpSocket != null && !blockConnections)
+			if (KMPClientMain.handshakeCompleted && KMPClientMain.tcpClient != null && !blockConnections)
 			{
-				if (KMPClientMain.tcpSocket.Connected && !gameRunning)
+				if (KMPClientMain.tcpClient.Connected && !gameRunning)
 				{
 					//Clear dictionaries
 					sentVessels_Situations.Clear();
@@ -3984,13 +4398,18 @@ namespace KMP
 					
 					serverVessels_RendezvousSmoothPos.Clear();
 					serverVessels_RendezvousSmoothVel.Clear();
+
+					isTimeSyncronized = false;
+					currentSyncTimeReceived = 0;
+					listClientTimeSyncLatency.Clear ();
+					listClientTimeSyncOffset.Clear ();
+					listClientTimeWarp.Clear ();
 	
 					newFlags.Clear();
 					
 					//Start MP game
 					KMPConnectionDisplay.windowEnabled = false;
 					gameRunning = true;
-					GameSettings.PHYSICS_FRAME_DT_LIMIT = 1.0f;
 					HighLogic.SaveFolder = "KMP";
 					HighLogic.CurrentGame = GamePersistence.LoadGame("start",HighLogic.SaveFolder,false,true);
 					HighLogic.CurrentGame.Parameters.Flight.CanAutoSave = false;
@@ -4010,8 +4429,18 @@ namespace KMP
 					GamePersistence.SaveGame("persistent",HighLogic.SaveFolder,SaveMode.OVERWRITE);
 					GameEvents.onFlightReady.Add(this.OnFirstFlightReady);
 					syncing = true;
-					
+
 					HighLogic.CurrentGame.Start();
+					
+					if (HasModule("ResearchAndDevelopment"))
+					{
+						Log.Debug("Erasing scenario modules");
+						HighLogic.CurrentGame.scenarios.Clear();
+						//This is done because scenarios is not cleared properly even when a new game is started, and it was causing bugs in KMP.
+						//Instead of clearing scenarios, KSP appears to set the moduleRefs of each module to null, which is what was causing KMP bugs #578, 
+						//and could be the cause of #579 (but closing KSP after disconnecting from a server, before connecting again, prevented it from happening, 
+						//at least for #578).
+					}
 					
 					if (gameMode == 1)
 					{
@@ -4019,7 +4448,7 @@ namespace KMP
 	                    proto.Load(ScenarioRunner.fetch);
 						proto = HighLogic.CurrentGame.AddProtoScenarioModule(typeof(ProgressTracking), GameScenes.SPACECENTER, GameScenes.FLIGHT, GameScenes.TRACKSTATION);
 	                    proto.Load(ScenarioRunner.fetch);
-						EditorPartList.Instance.Refresh();
+						clearEditorPartList = true;
 					}
 					
 					for (int i=0; i<50;)
@@ -4441,6 +4870,8 @@ namespace KMP
                     enqueueChatOutMessage(KMPChatDX.chatEntryString);
                     KMPChatDX.chatEntryString = String.Empty;
                     KMPChatDX.showInput = false;
+                    //ENABLE SHIP CONTROL
+                    if (InputLockManager.GetControlLock("KMP_ChatActive") == (ControlTypes.All)) InputLockManager.RemoveControlLock("KMP_ChatActive");
                 }
 
                 if (GUI.GetNameOfFocusedControl() != "inputField")
@@ -4761,8 +5192,8 @@ namespace KMP
 			//Assume Kerbin if body isn't supplied for some reason
 			if (body == null) body = FlightGlobals.Bodies.Find(b => b.name == "Kerbin");
 			
-			//If KSC out of range, syncing, not at Kerbin, or past ceiling we're definitely clear
-			if (syncing || body.name != "Kerbin" || altitude > SAFETY_BUBBLE_CEILING)
+			//If not at Kerbin or past ceiling we're definitely clear
+			if (body.name != "Kerbin" || altitude > SAFETY_BUBBLE_CEILING)
 				return false;
 			
 			//Cylindrical safety bubble -- project vessel position to a plane positioned at KSC with normal pointed away from surface
@@ -4824,8 +5255,9 @@ namespace KMP
 					EditorLogic.fetch.Lock(true, true, true,"KMP_lock");
 					isEditorLocked = true;
 				}
-				else if (!should_lock && isEditorLocked)
+				else if (!should_lock)
 				{
+					if (!isEditorLocked) EditorLogic.fetch.Lock(true, true, true,"KMP_lock");
 					EditorLogic.fetch.Unlock("KMP_lock");
 					isEditorLocked = false;
 				}

@@ -24,6 +24,7 @@ using System.Runtime.Serialization.Formatters.Binary;
 using System.Text.RegularExpressions;
 using System.Globalization;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 
 namespace KMPServer
 {
@@ -51,7 +52,17 @@ namespace KMPServer
         public const string DB_FILE_CONN = "Data Source=KMP_universe.db";
         public const string DB_FILE = "KMP_universe.db";
         public const string MOD_CONTROL_FILE = "KMPModControl.txt";
-        
+        public const string REQUIRED_MODS_PATH = "Mods/Required";
+        public const string OPTIONAL_MODS_PATH = "Mods/Optional";
+        public const string REQUIRED_EXACT_MODS_PATH = "Mods/Required_Exact";
+        public const string OPTIONAL_EXACT_MODS_PATH = "Mods/Optional_Exact";
+
+        public const string PLUGIN_DATA_DIRECTORY = "KMP/Plugins/PluginData/KerbalMultiPlayer/";
+        public const string CLIENT_CONFIG_FILENAME = "KMPClientConfig.xml";
+        public const string CLIENT_TOKEN_FILENAME = "KMPPlayerToken.txt";
+        public const string MOD_CONTROL_FILENAME = "KMPModControl.txt";
+        public const String GLOBAL_SETTINGS_FILENAME = "globalsettings.txt";
+
         public static byte[] kmpModControl;
 
         public const int UNIVERSE_VERSION = 4;
@@ -94,6 +105,10 @@ namespace KMPServer
 
         private bool backedUpSinceEmpty = false;
         private Dictionary<Guid, long> recentlyDestroyed = new Dictionary<Guid, long>();
+		private Dictionary<int, double> subSpaceMasterTick = new Dictionary<int, double>();
+		private Dictionary<int, long> subSpaceMasterTime = new Dictionary<int, long>();
+		private Dictionary<int, float> subSpaceMasterSpeed = new Dictionary<int, float>();
+		private Dictionary<int, long> subSpaceLastRateCheck = new Dictionary<int, long>();
 
 		private Boolean bHandleCommandsRunning = true;
 		
@@ -214,7 +229,10 @@ namespace KMPServer
             {
                 try
                 {
-					if (settings.useMySQL) universeDB.Open();
+					if (settings.useMySQL) {
+						universeDB = new MySqlConnection(settings.mySQLConnString);
+						universeDB.Open();
+					}
                     backupDatabase();
                     universeDB.Close();
                     universeDB.Dispose();
@@ -225,7 +243,7 @@ namespace KMPServer
             startDatabase();
         }
         
-		private static void generatePartsList(TextWriter writer)
+		private static List<string> generatePartsList()
         {
                 List<string> partList = new List<string>();
 
@@ -277,7 +295,8 @@ namespace KMPServer
                 //0.23 parts
                 partList.Add("RAPIER"); partList.Add("Large.Crewed.Lab");
 
-                foreach(string part in partList) writer.WriteLine(part);
+                return partList;
+                //foreach(string part in partList) writer.WriteLine(part);
         }
         
         private static void readModControl()
@@ -290,54 +309,249 @@ namespace KMPServer
             catch
             {
             	Log.Info(MOD_CONTROL_FILE + " not found, generating...");
-                TextWriter writer = File.CreateText(MOD_CONTROL_FILE);
-                writer.WriteLine("#You can comment by starting a line with a #, these are ignored by the server.");
-                writer.WriteLine("#Commenting will NOT work unless the line STARTS with a #.");
-                writer.WriteLine("#Sections supported are md5, partslist, resource-blacklist and resource-whitelist.");
-                writer.WriteLine("#You cannot use both resource-blacklist AND resource-whitelist in the same file.");
-                writer.WriteLine("#resource-blacklist bans ONLY the files you specify whereas resource-whitelist bans ALL resources except those you specify.");
-                writer.WriteLine("#Each section has its own type of formatting. Examples have been given.");
-                writer.WriteLine("#Sections are defined as follows");
-                writer.WriteLine();
-                writer.WriteLine("!required");
-                writer.WriteLine();
-                writer.WriteLine("#Here you can define GameData (mod) folders that the client requires before joining the server");
-                writer.WriteLine("#[Folder]");
-                writer.WriteLine("#Example: MechJeb2");
-                writer.WriteLine();
-                writer.WriteLine("Squad");
-                writer.WriteLine("#NOTE: This squad entry ensures that the client hasn't deleted the default parts. Disable this if undesired.");
-                writer.WriteLine();
-                writer.WriteLine("!md5");
-                writer.WriteLine();
-                writer.WriteLine("#To generate the md5 of a file you can use a utility such as this one: http://onlinemd5.com/");
-                writer.WriteLine("#For the MD5 section, file paths are read from inside GameData. If a client's MD5 does not match, they will not be permitted entry.");
-                writer.WriteLine("#You may not specify multiple MD5s for the same file. Do not put spaces around equals sign. Follow the example carefully.");
-                writer.WriteLine("#[File Path]=[MD5]");
-                writer.WriteLine("#Example: MechJeb2/Plugins/MechJeb2.dll=64E6E05C88F3466C63EDACD5CF8E5919");
-                writer.WriteLine();
-                writer.WriteLine("!resource-blacklist");
-                writer.WriteLine();
-                writer.WriteLine("#In this section you can specify the files to ban (or permit, if you change blacklist to whitelist).");
-                writer.WriteLine("#You do not need to specify a path, just a resource name.");
-                writer.WriteLine("#You can control any file from GameData here. It's prefered if you just specify the names of resources (as parts are controled by the partlist).");
-                writer.WriteLine("#[File]");
-                writer.WriteLine("#Example: MechJeb2.dll");
-                writer.WriteLine();
-                writer.WriteLine("!partslist");
-                writer.WriteLine();
-                writer.WriteLine("#This is a list of parts to allow users to put on their ships.");
-                writer.WriteLine("#If a part the client has doesn't appear on this list, they can still join the server but not use the part.");
-                writer.WriteLine("#The default stock parts have been added already for you.");
-                writer.WriteLine("#To add a mod part, add the name from the part's .cfg file. The name is the name from the PART{} section, where underscores are replaced with periods.");
-                writer.WriteLine("#[partname]");
-                writer.WriteLine("#Example: mumech.MJ2.Pod (NOTE: In the part.cfg this MechJeb2 pod is named mumech_MJ2_Pod. The _ have been replaced with .)");
-                writer.WriteLine("#You can use this application to generate partlists from a KSP installation if you want to add mod parts: http://forum.kerbalspaceprogram.com/threads/57284");
-                writer.WriteLine();
-                generatePartsList(writer);
-                writer.Close();
-                readModControl();
+                writeModControl(false, null);
             }
+        }
+
+        public static string ModFilesToListing(string path, bool checkSHA, ServerSettings.ConfigStore ServerSettings, out string[] files)
+        {
+            string result = "";
+            if (path[path.Length - 1] == '/')
+                path = path.Substring(0, path.Length - 1);
+            string[] pathsplit = path.Split('/');
+            string dirname = pathsplit[pathsplit.Length - 1];
+            try
+            {
+                files = System.IO.Directory.GetFiles(path, "*.*", System.IO.SearchOption.AllDirectories);
+            }
+            catch (DirectoryNotFoundException)
+            {
+                Log.Info(dirname + " mods directory not found, creating...");
+                System.IO.Directory.CreateDirectory(path);
+                files = new string[0];
+            }
+            SHA256Managed sha = new SHA256Managed();
+            foreach (string file in files)
+            {
+                if (ServerSettings.checkAllModFiles || file.EndsWith(".cfg", StringComparison.InvariantCultureIgnoreCase) || file.EndsWith(".dll", StringComparison.InvariantCultureIgnoreCase)) //add this file if it's a CFG file, a DLL file, or if the admin wants to do string checking with all files
+                {
+                    result += file.Substring(path.Length + 1).Replace("\\", "/") + "="; // cut off first part of path so it starts from GameData directory, make unix-safe
+                    if (checkSHA)
+                    {
+                        using (FileStream stream = File.OpenRead(file))
+                        {
+                            byte[] hash = sha.ComputeHash(stream);
+                            result += BitConverter.ToString(hash).Replace("-", String.Empty);
+                        }
+                    }
+                    result += "\n";
+                }
+            }
+            return result;
+        }
+
+        public static void writeModControl(bool autoAdd, ServerSettings.ConfigStore ServerSettings)
+        {
+            string filestring = "\n" +
+                "#You can comment by starting a line with a #, these are ignored by the server.\n" +
+                "#Commenting will NOT work unless the line STARTS with a '#'.\n" +
+                "#Sections supported are required-files, optional-files, partslist, resource-blacklist and resource-whitelist.\n" +
+                "#The client will be required to have the files found in required-files, and they must match the SHA hash if specified (this is where part mod files and play-altering files should go, like KWRocketry or Ferram Aerospace Research" +
+                "#The client may have the files found in optional-files, but IF they do then they must match the SHA hash (this is where mods that do not affect other players should go, like EditorExtensions or part catalogue managers\n" +
+                "#You cannot use both resource-blacklist AND resource-whitelist in the same file.\n" +
+                "#resource-blacklist bans ONLY the files you specify\n" +
+                "#resource-whitelist bans ALL resources except those specified in the resource-whitelist section OR in the SHA sections. A file listed in resource-whitelist will NOT be checked for SHA hash. This is useful if you want a mod that modifies files in its own directory as you play.\n" +
+                "#Each section has its own type of formatting. Examples have been given.\n" +
+                "#Sections are defined as follows:\n" +
+                "\n" +
+                "\n" +
+                "!required-files" +
+                "\n" +
+                "#To generate the SHA of a file you can use a utility such as this one: http://hash.online-convert.com/sha256-generator (use the 'hex' string)\n" +
+                "#For the Required section, file paths are read from inside GameData. If there is no SHA hash listed here (i.e. blank after the equals sign), SHA matching will not be enforced. Otherwise, if a client's SHA does not match they will not be permitted entry.\n" +
+                "#You may not specify multiple SHAs for the same file. Do not put spaces around equals sign. Follow the example carefully.\n" +
+                "#[File Path]=[SHA]\n" +
+                "#Example: MechJeb2/Plugins/MechJeb2.dll=B84BB63AE740F0A25DA047E5EDA35B26F6FD5DF019696AC9D6AF8FC3E031F0B9\n\n";
+
+            Log.Info("Beginning SHA256 hash of required mod files...");
+            string[] ls_required = null;
+            string[] ls_required_exact = null;
+            if (autoAdd) // auto-add required mod list
+            {
+                // add mods that user must have, but don't have to match SHA hash
+                filestring += ModFilesToListing(REQUIRED_MODS_PATH, false, ServerSettings, out ls_required);
+
+                // add mods that user must have, AND must match SHA hash
+                filestring += ModFilesToListing(REQUIRED_EXACT_MODS_PATH, true, ServerSettings, out ls_required_exact);
+            }
+
+            filestring += "\n\n!optional-files\n" +
+                "#Formatting for this section is the same as the 'required-files' section\n\n";
+
+            Log.Info("Beginning SHA256 hash of optional mod files...");
+            string[] ls_optional = null;
+            string[] ls_optional_exact = null;
+            if (autoAdd) // auto-add optional mod list
+            {
+                // add mods that user may have, but don't have to match SHA hash
+                filestring += ModFilesToListing(OPTIONAL_MODS_PATH, false, ServerSettings, out ls_optional);
+
+                // add mods that user may have, but if they do then they must match SHA hash
+                filestring += ModFilesToListing(OPTIONAL_EXACT_MODS_PATH, true, ServerSettings, out ls_optional_exact);
+            }
+
+            string resourcelistDescription = "#Set this to 'resource-blacklist' and specify the files to ban:\n" +
+                    "#[File]\n" +
+                    "#Example: MechJeb2.dll\n" +
+                    "#Alternatively, change 'blacklist' to 'whitelist' and clients will only be allowed to use parts listed here or in the 'required-files' and 'optional-files' sections.\n" +
+                    "#This is useful for when you use the 'checkAllModFiles' setting with mods that create or edit files as the user plays (for example, KMP modifies the 'KMPPlayerToken.txt' file for each user)\n" +
+                    "#In this case, you must specify the path AND filename:\n" +
+                    "#[File Path]\n" +
+                    "#Example: KMP/Plugins/PluginData/KerbalMultiPlayer/KMPPlayerToken.txt\n\n";
+
+            if(autoAdd){ // this section adds the whitelist from the existing file if it has one, so the user doesn't have to re-add any whitelisted files after auto-generating the Mod Control text file
+                string resourcelist = "";
+                try
+                {
+                    Log.Info("Looking for mod control file to preserve existing whitelist");
+                    using (StreamReader sr = new StreamReader(MOD_CONTROL_FILE))
+                    {
+                        string line;
+                        bool startedList = false;
+                        while (!sr.EndOfStream)
+                        {
+                            line = sr.ReadLine().Trim();
+                            if (line.Equals("!resource-whitelist", StringComparison.InvariantCultureIgnoreCase)) // wait until you find the whitelist section
+                            {
+                                startedList = true;
+                                continue;
+                            }
+                            if(!startedList) // skip all lines before you find it
+                            {
+                                continue;
+                            }
+                            if (line.Length > 0) // skip blank lines
+                            {
+                                if (line[0] == '!') // end at the next control section
+                                    break;
+                                if (line[0] == '#') // skip commented lines
+                                    continue;
+                                resourcelist += line + "\n";
+                            }
+                        }
+                    }
+                }
+                catch 
+                {
+                    Log.Info("No existing mod control file found");
+                }
+                string[] requiredWhitelist = {  PLUGIN_DATA_DIRECTORY + CLIENT_CONFIG_FILENAME + "\n",
+                                                PLUGIN_DATA_DIRECTORY + CLIENT_TOKEN_FILENAME + "\n",
+                                                PLUGIN_DATA_DIRECTORY + GLOBAL_SETTINGS_FILENAME + "\n",
+                                                PLUGIN_DATA_DIRECTORY + MOD_CONTROL_FILE + "\n"
+                                             };
+                foreach (string item in requiredWhitelist)
+                {
+                    if(!resourcelist.Contains(item)){
+                        resourcelist += item;
+                    }
+                }
+                filestring += "\n\n!resource-whitelist\n" +
+                    resourcelistDescription +
+                    resourcelist;
+            
+            } else
+            {
+                filestring += "\n\n" +
+                    "!resource-blacklist\n" +
+                    resourcelistDescription;
+            }
+
+            filestring += "\n\n" +
+                "!partslist\n"+
+                "#This is a list of parts to allow users to put on their ships.\n"+
+                "#If a part the client has doesn't appear on this list, they can still join the server but not use the part.\n"+
+                "#The default stock parts have been added already for you.\n"+
+                "#To add a mod part, add the name from the part's .cfg file. The name is the name from the PART{} section, where underscores are replaced with periods.\n"+
+                "#[partname]\n"+
+                "#Example: mumech.MJ2.Pod (NOTE: In the part.cfg this MechJeb2 pod is named mumech_MJ2_Pod. The _ have been replaced with .)\n"+
+                "#You can use this application to generate partlists from a KSP installation if you want to add mod parts: http://forum.kerbalspaceprogram.com/threads/57284 \n"+
+                "\n";
+
+            List<string> parts = new List<string>();
+            if (autoAdd) // add a part list for all part in the Required and Optional folders
+            {
+                string[] ls = ls_required.Concat(ls_required_exact).Concat(ls_optional).Concat(ls_optional_exact).ToArray(); // put files from both optional and required directories together
+                ls = ls.Distinct().ToArray();
+                char[] toperiod = { ' ', '_' };
+                foreach (string file in ls)
+                {
+                    if (file.Substring(file.Length - 4).Equals(".cfg", StringComparison.InvariantCultureIgnoreCase)) // check if config file (only place where parts are located)
+                    {
+                        using (StreamReader sr = new StreamReader(file))
+                        {
+                            bool newPart = false;
+                            while (!sr.EndOfStream)
+                            {
+                                string word = str_nextword(sr);
+                                if (word == "PART")
+                                {
+                                    newPart = true;
+                                }
+                                else if (word.Equals("name", StringComparison.InvariantCultureIgnoreCase) && str_nextword(sr).Equals("=", StringComparison.InvariantCultureIgnoreCase) && newPart)
+                                {
+                                    string line = sr.ReadLine();
+                                    line.Trim(); // remove whitespace from part name
+                                    string[] temp = line.Split(toperiod, StringSplitOptions.RemoveEmptyEntries); // convert spaces and underscores to periods
+                                    line = String.Join(".", temp);
+                                    parts.Add(line);
+                                    newPart = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                parts = parts.Distinct().ToList();
+            }
+            else
+            {
+                parts = generatePartsList();
+            }
+            foreach (string part in parts)
+            {
+                filestring += part + "\n";
+            }
+            File.WriteAllText(MOD_CONTROL_FILE, filestring);
+            Log.Info("New {0} file written.", MOD_CONTROL_FILE);
+            readModControl();
+        }
+
+        private static string str_nextword(StreamReader file)
+        {
+            char[] wordBoundaries = { '\n', ' ', '\t', '\r' };
+            string output = "";
+            bool started = false;
+            while (!file.EndOfStream)
+            {
+                char c = (char)file.Read();
+                if (wordBoundaries.Contains(c))
+                {
+                    if (!started)
+                    {
+                        continue;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                else
+                {
+                    started = true;
+                    output += c;
+                }
+            }
+            return output;
         }
         
         public void saveScreenshot(byte[] bytes, String player)
@@ -438,15 +652,9 @@ namespace KMPServer
 
             try
             {
-                if (settings.hostIPv6 == true) {
-                    udpClient = new UdpClient(settings.port, AddressFamily.InterNetworkV6);
-                    udpClient.BeginReceive(asyncUDPReceive, null);
-                    //udpClient.Client.AllowNatTraversal(1);
-                } else {
-                    udpClient = new UdpClient(settings.port, AddressFamily.InterNetwork);
-                    udpClient.BeginReceive(asyncUDPReceive, null);
-                }
-                
+            	udpClient = new UdpClient((IPEndPoint)tcpListener.LocalEndpoint);
+                udpClient.BeginReceive(asyncUDPReceive, null);
+                //udpClient.Client.AllowNatTraversal(1);
             }
             catch
             {
@@ -564,12 +772,14 @@ namespace KMPServer
                     case "/dekessler": dekesslerServerCommand(parts); break;
                     case "/countships": countShipsServerCommand(); break;
                     case "/listships": listShipsServerCommand(); break;
+                    case "/lockship": lockShipServerCommand(parts); break;
 					case "/deleteship": deleteShipServerCommand(parts); break;
 					case "/reloadmodfile": reloadModFileServerCommand(); break;
 					case "/say": sayServerCommand(rawParts); break;
 					case "/motd": motdServerCommand(rawParts); break;
 					case "/rules": rulesServerCommand(rawParts); break;
 					case "/setinfo": serverInfoServerCommand(rawParts);break;
+                    case "/modgen": writeModControl(true, settings); break;
                     default: Log.Info("Unknown Command: "+cleanInput); break;
             	}
 			}
@@ -643,7 +853,11 @@ namespace KMPServer
 
         private void countShipsServerCommand(bool bList = false)
         {
-			if (settings.useMySQL) universeDB.Open();
+			var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
             DbCommand cmd = universeDB.CreateCommand();
             String sql = "SELECT  vu.UpdateMessage, v.ProtoVessel, v.Guid" +
                         " FROM kmpVesselUpdate vu" +
@@ -661,7 +875,7 @@ namespace KMPServer
             {
                 KMPVesselUpdate vessel_update = (KMPVesselUpdate)ByteArrayToObject(GetDataReaderBytes(reader, 0));
                 if (bList)
-                    Log.Info("Name {0}\tID: {1}", vessel_update.name, vessel_update.kmpID);
+                    Log.Info("Name: {0}\tID: {1}", vessel_update.name, vessel_update.kmpID);
                 count++;
             }
 			reader.Dispose();
@@ -677,12 +891,67 @@ namespace KMPServer
         {
             countShipsServerCommand(true);
         }
+
+        private void lockShipServerCommand(string[] parts)
+        {
+            String[] args = parts[1].Split(' ');
+            if (args.Length == 2)
+            {
+                try
+                {
+                    Guid vesselGuid = new Guid(args[0]);
+                    bool lockShip = Boolean.Parse(args[1].ToLower());
+
+                    var universeDB = KMPServer.Server.universeDB;
+                    if (settings.useMySQL)
+                    {
+                        universeDB = new MySqlConnection(settings.mySQLConnString);
+                        universeDB.Open();
+                    }
+                    DbCommand cmd = universeDB.CreateCommand();
+
+                    String sql = "UPDATE kmpVessel" +
+                                " SET Private = @private" +
+                                " WHERE Guid = @guid";
+
+                    cmd.Parameters.AddWithValue("private", lockShip);
+                    cmd.Parameters.AddWithValue("guid", vesselGuid.ToByteArray());                    
+                    cmd.CommandText = sql;
+                    
+                    int rows = -1;
+                    if (cmd.CommandText != null) rows = cmd.ExecuteNonQuery();
+                    if (settings.useMySQL) universeDB.Close();
+
+                    if (rows != -1 && rows <= 1)
+                    {
+                        if (lockShip)
+                            Log.Info("Vessel {0} is now private.", args[0]);
+                        else
+                            Log.Info("Vessel {0} is now public.", args[0]);
+                    }
+                    else
+                        Log.Info("Vessel {0} not found.", args[0]);
+                }
+                catch (FormatException)
+                {
+                    Log.Error("Supplied tokens are invalid. Use /listships to double check your ID.");
+                }
+            }
+            else
+            {
+                Log.Info("Could not parse lock ship command. Format is \"/lockship <vesselID> <true/false>\"");
+            }
+        }
         
         private void deleteShipServerCommand(string[] parts)
         {
             try
             {
-				if (settings.useMySQL) universeDB.Open();
+				var universeDB = KMPServer.Server.universeDB;
+				if (settings.useMySQL) {
+					universeDB = new MySqlConnection(settings.mySQLConnString);
+					universeDB.Open();
+				}
 				DbCommand cmd = universeDB.CreateCommand();
             	String sql = "UPDATE kmpVessel SET Destroyed = 1 WHERE Guid = @guid;";
             	Guid tokill = new Guid(parts[1]);
@@ -791,7 +1060,11 @@ namespace KMPServer
 	
 	                settings.bans.Add(rec);
 	                ServerSettings.saveBans(settings);
-					if (settings.useMySQL) universeDB.Open();
+					var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                     DbCommand cmd = universeDB.CreateCommand();
                     string sql = "UPDATE kmpPlayer SET Guid = @newGuid WHERE Guid = @guid;";
                     cmd.Parameters.AddWithValue("newGuid", Guid.NewGuid());
@@ -913,7 +1186,11 @@ namespace KMPServer
                 {
                     Guid guid = new Guid(args[1]);
                     String username_lower = args[0].ToLower();
-					if (settings.useMySQL) universeDB.Open();
+					var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                     DbCommand cmd = universeDB.CreateCommand();
                     string sql = "DELETE FROM kmpPlayer WHERE Name LIKE @username;" +
                         " INSERT INTO kmpPlayer (Name, Guid) VALUES (@username,@guid);";
@@ -958,7 +1235,11 @@ namespace KMPServer
                 {
                     Guid guid = new Guid(args[1]);
                     String username_lower = args[0].ToLower();
-					if (settings.useMySQL) universeDB.Open();
+					var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                     DbCommand cmd = universeDB.CreateCommand();
                     string sql = "UPDATE kmpPlayer SET Name=@username, Guid=@guid WHERE Name LIKE @username OR Guid = @guid;";
                     cmd.CommandText = sql;
@@ -992,7 +1273,11 @@ namespace KMPServer
 				try
 				{
 					String dereg = parts[1];
-					if (settings.useMySQL) universeDB.Open();
+					var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
 					DbCommand cmd = universeDB.CreateCommand();
 					string sql = "DELETE FROM kmpPlayer WHERE Guid = @dereg OR Name LIKE @dereg;";
 					cmd.CommandText = sql;
@@ -1028,7 +1313,11 @@ namespace KMPServer
             try
             {
                 //Get latest tick & calculate cut-off
-				if (settings.useMySQL) universeDB.Open();
+				var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                 DbCommand cmd = universeDB.CreateCommand();
                 string sql = "SELECT MAX(LastTick) FROM kmpSubspace";
                 cmd.CommandText = sql;
@@ -1291,7 +1580,14 @@ namespace KMPServer
                 {
                     foreach (var client in clients.ToList().Where(c => c.isValid))
                     {
-                        client.sendOutgoingMessages();
+                        try
+						{
+							client.sendOutgoingMessages();
+						}
+						catch (NullReferenceException e)
+						{
+							Log.Debug ("Caught NRE in sendOutgoingMessages: {0}" + e.StackTrace);	
+						}
                     }
 
                     Thread.Sleep(SLEEP_TIME);
@@ -1346,7 +1642,11 @@ namespace KMPServer
                 {
                     try
                     {
-						if (settings.useMySQL) universeDB.Open();
+						var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                         DbCommand cmd = universeDB.CreateCommand();
                         string sql = "UPDATE kmpVessel SET Active = 0 WHERE Guid = @guid";
                         cmd.CommandText = sql;
@@ -1372,9 +1672,13 @@ namespace KMPServer
 
                 if (emptySubspace)
                 {
-					if (settings.useMySQL) universeDB.Open();
+					var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                     DbCommand cmd = universeDB.CreateCommand();
-                    string sql = "DELETE FROM kmpSubspace WHERE ID = @id AND LastTick < (SELECT MIN(s.LastTick) FROM (SELECT * FROM kmpSubspace) s INNER JOIN kmpVessel v ON v.Subspace = s.ID);";
+                    string sql = "DELETE FROM kmpSubspace WHERE ID = @id AND LastTick < (SELECT Tick FROM (SELECT MIN(s.LastTick) Tick FROM kmpSubspace s INNER JOIN kmpVessel v ON v.Subspace = s.ID) a);";
                     cmd.CommandText = sql;
                     cmd.Parameters.AddWithValue("id", cl.currentSubspaceID.ToString("D"));
                     cmd.ExecuteNonQuery();
@@ -1633,8 +1937,8 @@ namespace KMPServer
             clientMessageQueue.Enqueue(message);
         }
 
-        private KMPCommon.ClientMessageID[] AllowNullDataMessages = { KMPCommon.ClientMessageID.SCREEN_WATCH_PLAYER, KMPCommon.ClientMessageID.CONNECTION_END, KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_FLIGHT, KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_GAME, KMPCommon.ClientMessageID.PING };
-        private KMPCommon.ClientMessageID[] AllowClientNotReadyMessages = { KMPCommon.ClientMessageID.HANDSHAKE, KMPCommon.ClientMessageID.TEXT_MESSAGE, KMPCommon.ClientMessageID.SCREENSHOT_SHARE, KMPCommon.ClientMessageID.CONNECTION_END, KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_FLIGHT, KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_GAME, KMPCommon.ClientMessageID.PING, KMPCommon.ClientMessageID.UDP_PROBE, KMPCommon.ClientMessageID.WARPING, KMPCommon.ClientMessageID.SSYNC };
+        private KMPCommon.ClientMessageID[] AllowNullDataMessages = { KMPCommon.ClientMessageID.SCREEN_WATCH_PLAYER, KMPCommon.ClientMessageID.CONNECTION_END, KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_FLIGHT, KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_GAME, KMPCommon.ClientMessageID.PING, KMPCommon.ClientMessageID.SYNC_TIME };
+        private KMPCommon.ClientMessageID[] AllowClientNotReadyMessages = { KMPCommon.ClientMessageID.HANDSHAKE, KMPCommon.ClientMessageID.TEXT_MESSAGE, KMPCommon.ClientMessageID.SCREENSHOT_SHARE, KMPCommon.ClientMessageID.CONNECTION_END, KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_FLIGHT, KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_GAME, KMPCommon.ClientMessageID.PING, KMPCommon.ClientMessageID.UDP_PROBE, KMPCommon.ClientMessageID.WARPING, KMPCommon.ClientMessageID.SSYNC, KMPCommon.ClientMessageID.SYNC_TIME };
 
         public void handleMessage(Client cl, KMPCommon.ClientMessageID id, byte[] data)
         {
@@ -1697,6 +2001,9 @@ namespace KMPServer
 	                    case KMPCommon.ClientMessageID.SSYNC:
 	                        HandleSSync(cl, data);
 	                        break;
+						case KMPCommon.ClientMessageID.SYNC_TIME:
+							HandleTimeSync(cl, data);
+							break;
 	                }
 	            }
 	            catch (NullReferenceException)
@@ -1712,7 +2019,11 @@ namespace KMPServer
             if (subspaceID == -1)
             {
                 //Latest available subspace sync request
-				if (settings.useMySQL) universeDB.Open();
+				var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                 DbCommand cmd = universeDB.CreateCommand();
                 string sql = "SELECT ss1.ID FROM kmpSubspace ss1 LEFT JOIN kmpSubspace ss2 ON ss1.LastTick < ss2.LastTick WHERE ss2.ID IS NULL;";
                 cmd.CommandText = sql;
@@ -1735,15 +2046,31 @@ namespace KMPServer
             sendSubspace(cl, true);
         }
 
+		private void HandleTimeSync(Client cl, byte[] data)
+		{
+			//Message format: clientsendtick(8), serverreceivetick(8), serversendtick(8). The server send tick gets added during actual sending.
+			byte[] newdata = new byte[16];
+			data.CopyTo (newdata, 0);
+			BitConverter.GetBytes(DateTime.UtcNow.Ticks).CopyTo(newdata, 8);
+			byte[] message_bytes = buildMessageArray(KMPCommon.ServerMessageID.SYNC_TIME, newdata);
+			cl.queueOutgoingMessage(message_bytes); //This is still re-written during the actual send.
+			Log.Debug("{0} time sync request", cl.username);
+		}
+
         private void HandleWarping(Client cl, byte[] data)
         {
             float rate = BitConverter.ToSingle(data, 0);
+			double newsubspacetick = BitConverter.ToDouble(data, 4);
             if (cl.warping)
             {
                 if (rate < 1.1f)
                 {
                     //stopped warping-create subspace & add player to it
-					if (settings.useMySQL) universeDB.Open();
+					var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                     DbCommand cmd = universeDB.CreateCommand();
                     string sql = "INSERT INTO kmpSubspace (LastTick) VALUES (@tick);";
                     cmd.CommandText = sql;
@@ -1770,8 +2097,12 @@ namespace KMPServer
                     }
 					if (settings.useMySQL) universeDB.Close();
                     cl.currentSubspaceID = newSubspace;
+					Log.Debug("Adding new time sync data for subspace {0}", newSubspace);
+					subSpaceMasterTick.Add(cl.currentSubspaceID, newsubspacetick);
+					subSpaceMasterTime.Add(cl.currentSubspaceID, DateTime.UtcNow.Ticks);
+					subSpaceMasterSpeed.Add(cl.currentSubspaceID, 1f);
 					cl.warping = false;
-                    sendSubspace(cl, true, false);
+                    sendSubspace(cl, true, true);
 					cl.lastTick = -1d;
                     Log.Activity("{0} set to new subspace {1}", cl.username, newSubspace);
                 }
@@ -1792,10 +2123,14 @@ namespace KMPServer
             double incomingTick = BitConverter.ToDouble(data, 0);
             double lastSubspaceTick = incomingTick;
 
-            cl.lastTick = incomingTick;
+			cl.lastTick = incomingTick;
             if (!cl.warping)
             {
-				if (settings.useMySQL) universeDB.Open();
+				var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                 DbCommand cmd = universeDB.CreateCommand();
                 string sql = "SELECT LastTick FROM kmpSubspace WHERE ID = @id;";
                 cmd.CommandText = sql;
@@ -1815,32 +2150,12 @@ namespace KMPServer
                     cmd.Dispose();
                 }
 				if (settings.useMySQL) universeDB.Close();
-                if (lastSubspaceTick - incomingTick > 0.2d)
-                {
-                    cl.syncOffset += 0.001d;
-                    if (cl.syncOffset > 0.5d) cl.syncOffset = 0.5;
-                    if (cl.receivedHandshake && cl.lastSyncTime < (currentMillisecond - 2500L))
-                    {
-                        Log.Debug("Sending time-sync to {0} current offset {1}", cl.username, cl.syncOffset);
-                        if (cl.lagWarning > 24)
-                        {
-                            cl.lastSyncTime = currentMillisecond;
-                            markClientForDisconnect(cl, "Your game was running too slowly compared to other players. Please try reconnecting in a moment.");
-                        }
-                        else
-                        {
-                            sendSyncMessage(cl, lastSubspaceTick + cl.syncOffset);
-                            cl.lastSyncTime = currentMillisecond;
-                            cl.lagWarning++;
-                        }
-                    }
-                }
-                else
-                {
-                    cl.lagWarning = 0;
-                    if (cl.syncOffset > 0.01d) cl.syncOffset -= 0.001d;
-					if (settings.useMySQL) universeDB.Open();
-                    cmd = universeDB.CreateCommand();
+					var universeDB2 = universeDB;
+					if (settings.useMySQL) {
+						universeDB2 = new MySqlConnection(settings.mySQLConnString);
+						universeDB2.Open();
+					}
+                    cmd = universeDB2.CreateCommand();
                     sql = "UPDATE kmpSubspace SET LastTick = @tick WHERE ID = @subspaceID AND LastTick < @tick;";
                     cmd.Parameters.AddWithValue("tick", incomingTick.ToString("0.0").Replace(",", "."));
                     cmd.Parameters.AddWithValue("subspaceID", cl.currentSubspaceID.ToString("D"));
@@ -1849,8 +2164,9 @@ namespace KMPServer
                     cmd.Dispose();
 					if (settings.useMySQL) universeDB.Close();
                     if (lastSubspaceTick > 100d) sendHistoricalVesselUpdates(cl.currentSubspaceID, incomingTick, lastSubspaceTick);
-                }
-            }
+					cl.averageWarpRate = BitConverter.ToSingle(data, 8);
+					processClientAverageWarpRates(cl.currentSubspaceID);
+			}
         }
 
         private void HandleActivityUpdateInGame(Client cl)
@@ -1861,7 +2177,11 @@ namespace KMPServer
             {
                 try
                 {
-					if (settings.useMySQL) universeDB.Open();
+					var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                     DbCommand cmd = universeDB.CreateCommand();
                     string sql = "UPDATE kmpVessel SET Active = 0 WHERE Guid = @id";
                     cmd.CommandText = sql;
@@ -2022,7 +2342,11 @@ namespace KMPServer
                 if (scenario_update != null)
                 {
 					Log.Activity("Received scenario update from {0}", cl.username);
-					if (settings.useMySQL) universeDB.Open();
+					var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                     DbCommand cmd = universeDB.CreateCommand();
                     string sql = "SELECT ID FROM kmpScenarios WHERE PlayerID = @playerID AND Name = @name;";
                     cmd.CommandText = sql;
@@ -2111,10 +2435,14 @@ namespace KMPServer
             }
 			
             if (!accepted)
-            return;
+                return;
 
             //Check if this player is new to universe
-			if (settings.useMySQL) universeDB.Open();
+			var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
             DbCommand cmd = universeDB.CreateCommand();
             string sql = "SELECT COUNT(*) FROM kmpPlayer WHERE Name = @username AND Guid != @guid;";
             cmd.CommandText = sql;
@@ -2191,9 +2519,9 @@ namespace KMPServer
 	            cl.receivedHandshake = true;
 	            cl.guid = guid;
 	            cl.playerID = playerID;
-	
-	            sendServerMessage(cl, sb.ToString());
-	            sendServerSettings(cl);
+
+                sendServerMessage(cl, sb.ToString());
+                sendServerSettings(cl);
 	
 				//Send the MOTD
 				sb.Remove(0, sb.Length);
@@ -2218,7 +2546,11 @@ namespace KMPServer
 
         private void sendHistoricalVesselUpdates(int toSubspace, double atTick, double lastTick)
         {
-			if (settings.useMySQL) universeDB.Open();
+			var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
             DbCommand cmd = universeDB.CreateCommand();
             string sql = "SELECT  vu.UpdateMessage, v.Private" +
                 " FROM kmpVesselUpdateHistory vu" +
@@ -2269,7 +2601,11 @@ namespace KMPServer
             {
                 if (sendTimeSync) sendSubspaceSync(cl);
                 Log.Activity("Sending all vessels in current subspace for " + cl.username);
-				if (settings.useMySQL) universeDB.Open();
+				var universeDB = KMPServer.Server.universeDB;
+				if (settings.useMySQL) {
+					universeDB = new MySqlConnection(settings.mySQLConnString);
+					universeDB.Open();
+				}
                 DbCommand cmd = universeDB.CreateCommand();
                 string sql = "SELECT  vu.UpdateMessage, v.ProtoVessel, v.Private, v.OwnerID" +
                     " FROM kmpVesselUpdate vu" +
@@ -2307,13 +2643,18 @@ namespace KMPServer
                     reader.Close();
                 }
 				if (settings.useMySQL) universeDB.Close();
+				if (sendTimeSync) sendScenarios(cl);
                 sendSyncCompleteMessage(cl);
             }
         }
 
         private void sendSubspaceSync(Client cl, bool sendSync = true)
         {
-			if (settings.useMySQL) universeDB.Open();
+			var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
             DbCommand cmd = universeDB.CreateCommand();
             string sql = "SELECT LastTick FROM kmpSubspace WHERE ID = @curSubspaceID;";
             cmd.CommandText = sql;
@@ -2336,7 +2677,6 @@ namespace KMPServer
 			{
 				sendSyncMessage(cl, tick);
 				cl.lastTick = tick;
-				sendScenarios(cl);
 			}
         }
 
@@ -2344,7 +2684,11 @@ namespace KMPServer
         {
             if (!cl.warping)
             {
-				if (settings.useMySQL) universeDB.Open();
+				var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                 DbCommand cmd = universeDB.CreateCommand();
                 string sql = "SELECT ss1.ID, ss1.LastTick FROM kmpSubspace ss1 LEFT JOIN kmpSubspace ss2 ON ss1.LastTick < ss2.LastTick WHERE ss2.ID IS NULL;";
                 cmd.CommandText = sql;
@@ -2591,7 +2935,7 @@ namespace KMPServer
 
             byte[] version_bytes = encoder.GetBytes(KMPCommon.PROGRAM_VERSION);
 
-            byte[] data_bytes = new byte[version_bytes.Length + 20 + kmpModControl.Length];
+            byte[] data_bytes = new byte[version_bytes.Length + 20 + kmpModControl.Length + 1];
 
             //Write net protocol version
             KMPCommon.intToBytes(KMPCommon.NET_PROTOCOL_VERSION).CopyTo(data_bytes, 0);
@@ -2610,6 +2954,9 @@ namespace KMPServer
 			
             KMPCommon.intToBytes(kmpModControl.Length).CopyTo(data_bytes, 16 + version_bytes.Length);
             kmpModControl.CopyTo(data_bytes, 20 + version_bytes.Length);
+
+            //Add checkAllModFiles setting to the handshake message
+            data_bytes[20 + version_bytes.Length + kmpModControl.Length] = Convert.ToByte(settings.checkAllModFiles);
 
             cl.queueOutgoingMessage(KMPCommon.ServerMessageID.HANDSHAKE, data_bytes);
         }
@@ -2682,7 +3029,11 @@ namespace KMPServer
         private void sendPluginUpdateToAll(byte[] data, bool secondaryUpdate, Client cl = null)
         {
             //Extract the KMPVesselUpdate & ProtoVessel, if present, for universe DB
-			if (settings.useMySQL) universeDB.Open();
+			var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
             byte[] infoOnly_data = new byte[data.Length];
             byte[] owned_data = new byte[data.Length];
             byte[] past_data = new byte[data.Length];
@@ -2782,8 +3133,7 @@ namespace KMPServer
                                     {
                                         cmd = universeDB.CreateCommand();
                                         //Clean up database entries
-                                        sql = "DELETE FROM kmpSubspace WHERE ID = @curSubspace AND LastTick < (SELECT MIN(s.LastTick)" +
-                                            " FROM (SELECT * FROM kmpSubspace) s INNER JOIN kmpVessel v ON v.Subspace = s.ID);";
+                                        sql = "DELETE FROM kmpSubspace WHERE ID = @curSubspace AND LastTick < (SELECT Tick FROM (SELECT MIN(s.LastTick) Tick FROM kmpSubspace s INNER JOIN kmpVessel v ON v.Subspace = s.ID) a);";
                                         cmd.CommandText = sql;
                                         cmd.Parameters.AddWithValue("curSubspace", cl.currentSubspaceID.ToString("D"));
                                         cmd.ExecuteNonQuery();
@@ -2865,8 +3215,7 @@ namespace KMPServer
                                     {
                                         cmd = universeDB.CreateCommand();
                                         //Clean up database entries
-                                        sql = "DELETE FROM kmpSubspace WHERE ID = @curSubspace AND LastTick < (SELECT MIN(s.LastTick)" +
-                                            " FROM (SELECT * FROM kmpSubspace) s INNER JOIN kmpVessel v ON v.Subspace = s.ID);";
+                                        sql = "DELETE FROM kmpSubspace WHERE ID = @curSubspace AND LastTick < (SELECT Tick FROM (SELECT MIN(s.LastTick) Tick FROM kmpSubspace s INNER JOIN kmpVessel v ON v.Subspace = s.ID) a);";
                                         cmd.CommandText = sql;
                                         cmd.Parameters.AddWithValue("curSubspace", cl.currentSubspaceID.ToString("D"));
                                         cmd.ExecuteNonQuery();
@@ -2892,11 +3241,11 @@ namespace KMPServer
                                 sendVesselStatusUpdateToAll(cl, cl.currentVessel);
                             }
 
-                            cl.currentVessel = vessel_update.kmpID;
-                        }
+							cl.currentVessel = vessel_update.kmpID;
+						}
 
                         //Store update
-                        storeVesselUpdate(vessel_update, cl);
+                        storeVesselUpdate(data, cl, vessel_update.kmpID, vessel_update.tick);
 
                         //Update vessel destroyed status
                         if (checkVesselDestruction(vessel_update, cl))
@@ -2967,7 +3316,7 @@ namespace KMPServer
 									sendVesselStatusUpdateToAll(cl, vessel_update.kmpID);
                                 }
                                 //No one else is controlling it, so store the update
-                                storeVesselUpdate(vessel_update, cl, true);
+                                storeVesselUpdate(data, cl, vessel_update.kmpID, vessel_update.tick, true);
                                 //Update vessel destroyed status
                                 if (checkVesselDestruction(vessel_update, cl))
                                     vessel_update.situation = Situation.DESTROYED;
@@ -3032,10 +3381,13 @@ namespace KMPServer
             }
         }
 
-        private void storeVesselUpdate(KMPVesselUpdate vessel_update, Client cl, bool isSecondary = false)
+        private void storeVesselUpdate(byte[] updateBlob, Client cl, Guid kmpID, double tick, bool isSecondary = false)
         {
-            byte[] updateBlob = ObjectToByteArray(vessel_update);
-			if (settings.useMySQL) universeDB.Open();
+			var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
             DbCommand cmd = universeDB.CreateCommand();
             string sql = "DELETE FROM kmpVesselUpdate WHERE Guid = @kmpID AND Subspace = @curSubspace;" +
                 " INSERT INTO kmpVesselUpdate (Guid, Subspace, UpdateMessage)" +
@@ -3044,9 +3396,9 @@ namespace KMPServer
                 " VALUES (@kmpID, @curSubspace, @ves_tick, @update);";
             cmd.Parameters.AddWithValue("update", updateBlob);
             cmd.CommandText = sql;
-            cmd.Parameters.AddWithValue("kmpID", vessel_update.kmpID);
+            cmd.Parameters.AddWithValue("kmpID", kmpID);
             cmd.Parameters.AddWithValue("curSubspace", cl.currentSubspaceID.ToString("D"));
-            if (!isSecondary) cmd.Parameters.AddWithValue("ves_tick", vessel_update.tick);
+            if (!isSecondary) cmd.Parameters.AddWithValue("ves_tick", tick);
             cmd.ExecuteNonQuery();
             cmd.Dispose();
 			if (settings.useMySQL) universeDB.Close();
@@ -3058,7 +3410,11 @@ namespace KMPServer
             {
                 if (!recentlyDestroyed.ContainsKey(vessel_update.kmpID) || (recentlyDestroyed[vessel_update.kmpID] + 1500L) < currentMillisecond)
                 {
-					if (settings.useMySQL) universeDB.Open();
+					var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
                     DbCommand cmd = universeDB.CreateCommand();
                     string sql = "UPDATE kmpVessel SET Destroyed = @ves_up_destroyed WHERE Guid = @kmpID;";
                     cmd.Parameters.AddWithValue("ves_up_destroyed", Convert.ToInt32(vessel_update.situation == Situation.DESTROYED));
@@ -3091,7 +3447,11 @@ namespace KMPServer
 
         private void sendVesselStatusUpdate(Client cl, Guid vessel)
         {
-			if (settings.useMySQL) universeDB.Open();
+			var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
             DbCommand cmd = universeDB.CreateCommand();
             string sql = "SELECT vu.UpdateMessage, v.ProtoVessel, v.Private, v.OwnerID, v.Active" +
                 " FROM kmpVesselUpdate vu" +
@@ -3185,7 +3545,13 @@ namespace KMPServer
 		
 		private void sendScenarios(Client cl)
 		{
-			if (settings.useMySQL) universeDB.Open();
+			if (cl.hasReceivedScenarioModules) return;
+			cl.hasReceivedScenarioModules = true;
+			var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
 			DbCommand cmd = universeDB.CreateCommand();
             string sql = "SELECT UpdateMessage FROM kmpScenarios WHERE PlayerID = @playerID";
 			if (settings.gameMode != 1) //Only include career ScenarioModules if game server is set to career mode
@@ -3199,6 +3565,7 @@ namespace KMPServer
                 while (reader.Read())
                 {
                     byte[] data = GetDataReaderBytes(reader, 0);
+					Log.Activity("Sending scenario update to player {0}", cl.username);
                     sendScenarioMessage(cl, data);
                 }
             }
@@ -3211,10 +3578,71 @@ namespace KMPServer
 		
         private void sendSyncMessage(Client cl, double tick)
         {
+			double subspaceTick = tick;
+			float subspaceSpeed = 1f;
+			long subspaceTime = DateTime.UtcNow.Ticks;
+			if (subSpaceMasterTick.ContainsKey(cl.currentSubspaceID)) {
+				double tickOffset = (double) (subspaceTime - subSpaceMasterTime[cl.currentSubspaceID]) / 10000000; //The magic number that converts 100ns to seconds.
+				subspaceTick = subSpaceMasterTick[cl.currentSubspaceID] + tickOffset;
+				subspaceSpeed = subSpaceMasterSpeed[cl.currentSubspaceID];
+				Log.Debug ("Found entry: " + tickOffset + " offset for subspace " + cl.currentSubspaceID);
+			} else {
+				subSpaceMasterTick.Add(cl.currentSubspaceID, subspaceTick);
+				subSpaceMasterTime.Add(cl.currentSubspaceID, subspaceTime);
+				subSpaceMasterSpeed.Add(cl.currentSubspaceID, 1f);
+				Log.Debug ("Added entry for subspace " + cl.currentSubspaceID);
+			}
             //Log.Info("Time sync for: " + cl.username);
-            byte[] message_bytes = buildMessageArray(KMPCommon.ServerMessageID.SYNC, BitConverter.GetBytes(tick));
+			byte[] timesyncdata = new byte[20]; //double (8) subspace Tick, long (8) server time, float (4) subspace speed.
+			BitConverter.GetBytes(subspaceTick).CopyTo(timesyncdata, 0);
+			BitConverter.GetBytes(subspaceTime).CopyTo(timesyncdata, 8);
+			BitConverter.GetBytes(subspaceSpeed).CopyTo(timesyncdata, 16);
+            byte[] message_bytes = buildMessageArray(KMPCommon.ServerMessageID.SYNC, timesyncdata);
             cl.queueOutgoingMessage(message_bytes);
         }
+
+		private void sendSyncMessageToSubspace(int subspaceID) {
+			foreach (Client cl in clients) {
+				if (cl.currentSubspaceID == subspaceID) {
+					sendSyncMessage (cl, subSpaceMasterTick[subspaceID]); //The tick is skewed correctly in sendSyncMessage.
+				}
+			}
+		}
+
+		private void processClientAverageWarpRates(int subspaceID) {
+
+			if (subSpaceLastRateCheck.ContainsKey(subspaceID)) {
+				if (currentMillisecond < subSpaceLastRateCheck[subspaceID] + 30000) return; //Only check once every 30 seconds per subspace.
+			}
+			subSpaceLastRateCheck [subspaceID] = currentMillisecond;
+
+			if (!subSpaceMasterSpeed.ContainsKey(subspaceID) || !subSpaceMasterTick.ContainsKey(subspaceID) || !subSpaceMasterSpeed.ContainsKey(subspaceID)) return; //Only works for locked subspaces
+
+			int numberOfClientsInSubspace = 0;
+			float subspaceWarpRateTotal = 0f;
+			float subspaceMinWarpRate = 1f;
+			foreach (Client cl in clients) {
+				if (cl.currentSubspaceID == subspaceID) {
+					numberOfClientsInSubspace++;
+					subspaceWarpRateTotal += cl.averageWarpRate;
+					if (cl.averageWarpRate < subspaceMinWarpRate) subspaceMinWarpRate = cl.averageWarpRate;
+				}
+			}
+			float subspaceAverageWarpRate = subspaceWarpRateTotal / numberOfClientsInSubspace; //Aka: The average warp rate of the subspace.
+			float subspaceTargetRate = (subspaceAverageWarpRate + subspaceMinWarpRate) / 2; //Lets slow down to halfway between the average and slowest player.
+			if (subspaceTargetRate > 1f) subspaceTargetRate = 1f; //Let's just not worry about rates above 0.95 times normal.
+			if (subspaceTargetRate < 0.75f) subspaceTargetRate = 0.75f; //Let's set a lower bound to something still reasonable like 0.75f.
+			float subspaceDiffRate = Math.Abs(subSpaceMasterSpeed [subspaceID] - subspaceTargetRate);
+			if (subspaceDiffRate > 0.05f) { //Allow 3% tolerance
+				Log.Debug ("Subspace " + subspaceID + " relocked to " + subspaceTargetRate + "x speed.");
+				long currenttime = DateTime.UtcNow.Ticks;
+				double tickOffset = (double) (currenttime - subSpaceMasterTime[subspaceID]) / 10000000; //The magic number that converts 100ns to seconds.
+				subSpaceMasterTick[subspaceID] = subSpaceMasterTick[subspaceID] + tickOffset;
+				subSpaceMasterTime[subspaceID] = currenttime;
+				subSpaceMasterSpeed[subspaceID] = subspaceTargetRate;
+				sendSyncMessageToSubspace (subspaceID);
+			}
+		}
 		
         private void sendSyncCompleteMessage(Client cl)
         {
@@ -3554,12 +3982,11 @@ namespace KMPServer
             	universeDB.BackupDatabase(diskDB);
 			}
             DbCommand cmd = diskDB.CreateCommand();
-            string sql = "DELETE FROM kmpSubspace WHERE LastTick < (SELECT MIN(s.LastTick) FROM (SELECT * FROM kmpSubspace) s" +
-                " INNER JOIN kmpVessel v ON v.Subspace = s.ID);" +
+            string sql = "DELETE FROM kmpSubspace WHERE LastTick < (SELECT Tick FROM (SELECT MIN(s.LastTick) Tick FROM kmpSubspace s INNER JOIN kmpVessel v ON v.Subspace = s.ID) a);" +
                 " DELETE FROM kmpVesselUpdateHistory;" +
-                " DELETE FROM kmpVesselUpdate WHERE ID IN (SELECT ID FROM (SELECT * FROM kmpVesselUpdate) vu" +
+                " DELETE FROM kmpVesselUpdate WHERE ID IN (SELECT ID FROM kmpVesselUpdate vu" +
                 " WHERE Subspace != (SELECT ID FROM kmpSubspace WHERE LastTick = (SELECT MAX(LastTick)" +
-                " FROM kmpSubspace WHERE ID IN (SELECT Subspace FROM (SELECT * FROM kmpVesselUpdate) WHERE Guid = vu.Guid))));";
+                " FROM kmpSubspace WHERE ID IN (SELECT Subspace FROM kmpVesselUpdate WHERE Guid = vu.Guid))));";
             cmd.CommandText = sql;
             cmd.ExecuteNonQuery();
             diskDB.Close();
@@ -3567,7 +3994,11 @@ namespace KMPServer
 
         public void cleanDatabase()
         {
-			if (settings.useMySQL) universeDB.Open();
+			var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
             try
             {
                 Log.Info("Attempting to optimize database...");
@@ -3591,8 +4022,8 @@ namespace KMPServer
 					
 					//Clear anything before that
 					DbCommand cmd2 = universeDB.CreateCommand();
-	                string sql2 = "DELETE FROM kmpSubspace WHERE LastTick < @minTick AND LastTick < (SELECT MIN(s.LastTick) FROM (SELECT * FROM kmpSubspace) s" +
-	                    " INNER JOIN kmpVessel v ON v.Subspace = s.ID);" +
+	                string sql2 = "DELETE FROM kmpSubspace WHERE LastTick < @minTick AND LastTick < (SELECT Tick FROM (SELECT MIN(s.LastTick) Tick FROM kmpSubspace s" +
+	                    " INNER JOIN kmpVessel v ON v.Subspace = s.ID) a);" +
 	                    " DELETE FROM kmpVesselUpdateHistory WHERE Tick < @minTick;";
 					cmd2.Parameters.AddWithValue("minTick", earliestClearTick);
 	                cmd2.CommandText = sql2;
@@ -3602,12 +4033,12 @@ namespace KMPServer
 				{
 					//Clear all but the latest subspace
 	                DbCommand cmd = universeDB.CreateCommand();
-	                string sql = "DELETE FROM kmpSubspace WHERE LastTick < (SELECT MIN(s.LastTick) FROM (SELECT * FROM kmpSubspace) s" +
-	                    " INNER JOIN kmpVessel v ON v.Subspace = s.ID);" +
+	                string sql = "DELETE FROM kmpSubspace WHERE LastTick < (SELECT Tick FROM (SELECT MIN(s.LastTick) Tick FROM kmpSubspace s" +
+	                    " INNER JOIN kmpVessel v ON v.Subspace = s.ID) a);" +
 	                    " DELETE FROM kmpVesselUpdateHistory;" +
-	                    " DELETE FROM kmpVesselUpdate WHERE ID IN (SELECT ID FROM (SELECT * FROM kmpVesselUpdate) vu" +
+	                    " DELETE FROM kmpVesselUpdate WHERE ID IN (SELECT ID FROM (SELECT ID FROM kmpVesselUpdate vu" +
 	                    " WHERE Subspace != (SELECT ID FROM kmpSubspace WHERE LastTick = (SELECT MAX(LastTick) FROM kmpSubspace" +
-	                    " WHERE ID IN (SELECT Subspace FROM (SELECT * FROM kmpVesselUpdate) vu2 WHERE vu2.Guid = vu.Guid))));";
+	                    " WHERE ID IN (SELECT Subspace FROM kmpVesselUpdate vu2 WHERE vu2.Guid = vu.Guid)))) a);";
 	                cmd.CommandText = sql;
 	                cmd.ExecuteNonQuery();
 				}
@@ -3636,7 +4067,11 @@ namespace KMPServer
         {
             if (comparisonSubspace == -1 || referenceSubspace == -1) return false;
             if (comparisonSubspace == referenceSubspace) return true;
-			if (settings.useMySQL) universeDB.Open();
+			var universeDB = KMPServer.Server.universeDB;
+			if (settings.useMySQL) {
+				universeDB = new MySqlConnection(settings.mySQLConnString);
+				universeDB.Open();
+			}
             double refTime = 0d, compTime = 0d;
             DbCommand cmd = universeDB.CreateCommand();
             string sql = "SELECT LastTick FROM kmpSubspace WHERE ID = @refSubspace;";
@@ -3741,6 +4176,7 @@ namespace KMPServer
             Log.Info("/clearclients - Attempt to clear 'ghosted' clients");
 			Log.Info("/countships - Lists number of ships in universe.");
 			Log.Info("/listships - List all ships in universe along with their ID");
+            Log.Info("/lockship [ID] [true/false] - Set ship as private or public.");
 			Log.Info("/deleteship [ID] - Removes ship from universe."); 
             Log.Info("/dekessler <mins> - Remove debris that has not been updated for at least <mins> minutes (in-game time) (If no <mins> value is specified, debris that is older than 30 minutes will be cleared)");
             Log.Info("/save - Backup universe");
@@ -3750,6 +4186,7 @@ namespace KMPServer
 			Log.Info("/rules [rules] - Sets server rules, leave blank for none");
             Log.Info("/say <-u username> [message] - Send a Server message <to specified user>");
 			Log.Info("/help - Displays all commands in the server\n");
+            Log.Info("/modgen - Auto-generate a KMPModControl.txt file using what you have placed in the server's 'Mods' directory.\n");
 
             // to add a new command to the command list just copy the Log.Info method and add how to use that command.
         }

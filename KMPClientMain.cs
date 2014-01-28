@@ -47,6 +47,7 @@ namespace KMP
 
         //public const String INTEROP_CLIENT_FILENAME = "interopclient.txt";
         //public const String INTEROP_PLUGIN_FILENAME = "interopplugin.txt";
+        public const string PLUGIN_DATA_DIRECTORY = "KMP/Plugins/PluginData/KerbalMultiPlayer/";
         public const string CLIENT_CONFIG_FILENAME = "KMPClientConfig.xml";
         public const string CLIENT_TOKEN_FILENAME = "KMPPlayerToken.txt";
         public const string MOD_CONTROL_FILENAME = "KMPModControl.txt";
@@ -63,13 +64,8 @@ namespace KMP
         public const int MAX_RECONNECT_ATTEMPTS = 0;
         public const long PING_TIMEOUT_DELAY = 10000;
 
-        public const int INTEROP_WRITE_INTERVAL = 333;
-        public const int INTEROP_MAX_QUEUE_SIZE = 64;
-
         public const int MAX_QUEUED_CHAT_LINES = 8;
         public const int DEFAULT_PORT = 2076;
-
-        //public const String PLUGIN_DIRECTORY = "PluginData/kerbalmultiplayer/";
 
         public static UnicodeEncoding encoder = new UnicodeEncoding();
 
@@ -103,12 +99,12 @@ namespace KMP
 		//ModChecking
 		public static bool modFileChecked = false;
 		public static List<string> partList = new List<string>();
-        public static Dictionary<string, string> md5List = new Dictionary<string, string>(); //path:md5
+        public static Dictionary<string, SHAMod> modFileList = new Dictionary<string, SHAMod>();
         public static List<string> resourceList = new List<string>();
         public static List<string> requiredModList = new List<string>();
 		public static string resourceControlMode = "blacklist";
 		public static string modMismatchError = "Mod Verification Failed - Reason Unknown";
-		public static string GAMEDATAPATH = new System.IO.DirectoryInfo(getKMPDirectory()).Parent.Parent.FullName;
+        public static string GAMEDATAPATH = new System.IO.DirectoryInfo(getKMPDirectory()).Parent.Parent.FullName;
         public static byte[] kmpModControl_bytes;
 		
         //Connection
@@ -116,11 +112,11 @@ namespace KMP
         public static bool endSession;
         public static bool intentionalConnectionEnd;
         public static bool handshakeCompleted;
-        public static Socket tcpSocket;
+        public static TcpClient tcpClient;
         public static long lastTCPMessageSendTime;
         public static bool quitHelperMessageShow;
         public static int reconnectAttempts;
-        public static Socket udpSocket;
+        public static UdpClient udpClient;
         public static bool udpConnected;
         public static long lastUDPMessageSendTime;
         public static long lastUDPAckReceiveTime;
@@ -129,9 +125,6 @@ namespace KMP
         public static bool receivedSettings;
 
         //Plugin Interop
-
-        public static Queue<byte[]> interopOutQueue;
-        public static long lastInteropWriteTime;
         public static Queue<byte[]> interopInQueue;
 
         public static Queue<byte[]> pluginUpdateInQueue;
@@ -164,9 +157,22 @@ namespace KMP
         private static int receiveIndex = 0;
         private static int receiveHandleIndex = 0;
 
+		private static Queue<byte[]> queuedOutMessagesHighPriority;
+		private static Queue<byte[]> queuedOutMessagesSplit;
+		private static Queue<byte[]> queuedOutMessages;
+		private static bool isClientSendingData;
+
+		private static Queue<byte[]> queuedOutUDPMessages;
+		private static bool isClientSendingUDPData;
+
+        //Split message
+        private static int splitMessageReceiveIndex = 0;
+        private static byte[] splitMessageData;
+
         //Threading
 
-        public static object tcpSendLock = new object();
+		public static object sendOutgoingMessagesLock = new object();
+		public static object sendOutgoingUDPMessagesLock = new object();
         public static object serverSettingsLock = new object();
         public static object screenshotOutLock = new object();
         public static object threadExceptionLock = new object();
@@ -273,152 +279,162 @@ namespace KMP
             writeConfigFile();
         }
         
-        private static string doHashMD5(MD5 md5, byte[] tohash)
+        private static void parseModFile(string ModFileContent)
         {
-        	byte[] hashed = md5.ComputeHash(tohash);
-
-            StringBuilder sBuilder = new StringBuilder();
-
-            // Loop through each byte of the hashed data  
-            // and format each one as a hexadecimal string. 
-            for (int i = 0; i < hashed.Length; i++)
-            {
-                sBuilder.Append(hashed[i].ToString("x2"));
-            }
-			
-            return sBuilder.ToString();
-        }
-        
-        private static void parseModFile(string modfilepath)
-        {
-        	System.IO.StreamReader reader = System.IO.File.OpenText(modfilepath);
+            System.IO.StringReader reader = new System.IO.StringReader(ModFileContent);
         	
-	        string resourcemode = "blacklist";
+	        string resourcemode = "whitelist";
 	        List<string> allowedParts = new List<string>();
-	        Dictionary<string, string> hashes = new Dictionary<string, string>();
+            Dictionary<string, SHAMod> hashes = new Dictionary<string, SHAMod>();
 	        List<string> resources = new List<string>();
 	        List<string> modList = new List<string>();
 	        string line;
 	        string[] splitline;
-	        string readmode = "parts";
-	        while (reader.Peek() != -1)
+	        string readmode = "";
+	        while (true)
 	        {
-	        	
 	        	line = reader.ReadLine();
-	        	
+                if (line == null)
+                {
+                    break;
+                }
 	        	try
 	        	{
-				if(! String.IsNullOrEmpty(line))
-				{
-					if(line[0] != '#')//allows commented lines
-					{
-						if(line[0] == '!')//changing readmode
-						{
-							if(line.Contains("partslist")){
-								readmode = "parts";
-							}
-							else if(line.Contains("md5")){
-								readmode = "md5";
-							}
-							else if(line.Contains("resource-blacklist")){ //allow all resources EXCEPT these in file
-								readmode = "resource";
-								resourcemode = "blacklist";
-							}
-							else if(line.Contains("resource-whitelist")){ //allow NO resources EXCEPT these in file
-								readmode = "resource";
-								resourcemode = "whitelist";
-							}
-							else if(line.Contains("required")){
-								readmode = "required";
-							}
-						}
-						else if(readmode == "parts")
-						{
-							allowedParts.Add(line);
-						}
-						else if(readmode == "md5")
-						{
-							splitline = line.Split('=');
-							hashes.Add(splitline[0], splitline[1]); //stores path:md5
-						}
-						else if(readmode == "resource"){
-							resources.Add(line);
-						}
-						else if(readmode == "required"){
-							modList.Add(line);
-						}
-					}
-				}
-			}
+				    if(!String.IsNullOrEmpty(line))
+				    {
+					    if(line[0] != '#')//allows commented lines
+					    {
+						    if(line[0] == '!')//changing readmode
+						    {
+							    if(line.Contains("partslist")){
+								    readmode = "parts";
+							    }
+                                else if (line.Contains("required-files"))
+                                {
+                                    readmode = "required-files";
+							    }
+                                else if (line.Contains("optional-files"))
+                                {
+                                    readmode = "optional-files";
+                                }
+							    else if(line.Contains("resource-blacklist")){ //allow all resources EXCEPT these in file
+								    readmode = "resource";
+								    resourcemode = "blacklist";
+							    }
+							    else if(line.Contains("resource-whitelist")){ //allow NO resources EXCEPT these in file
+								    readmode = "resource";
+								    resourcemode = "whitelist";
+							    }
+							    else if(line.Contains("required")){
+								    readmode = "required";
+							    }
+						    }
+						    else if(readmode == "parts")
+						    {
+							    allowedParts.Add(line);
+						    }
+                            else if (readmode == "required-files")
+						    {
+                                splitline = line.Split('=');
+                                string hash = "";
+                                if (splitline.Length > 1)
+                                {
+                                    hash = splitline[1];
+                                }
+                                hashes.Add(splitline[0], new SHAMod { sha = hash, required = true });
+						    }
+                            else if (readmode == "optional-files")
+                            {
+                                splitline = line.Split('=');
+                                string hash = "";
+                                if (splitline.Length > 1)
+                                {
+                                    hash = splitline[1];
+                                }
+                                hashes.Add(splitline[0], new SHAMod { sha = hash, required = false });
+                            }
+						    else if(readmode == "resource"){
+							    resources.Add(line);
+						    }
+						    else if(readmode == "required"){
+							    modList.Add(line);
+						    }
+					    }
+				    }
+			    }
 		        catch (Exception e)
 		        {
-		        	Log.Info(e.ToString());
+		            Log.Info(e.ToString());
 		        }
 	        }
 	        
 	        reader.Close();
 	        partList = allowedParts; //make all the vars global once we're done parsing
-	        md5List = hashes;
+            modFileList = hashes;
 	        resourceControlMode = resourcemode;
 	        resourceList = resources;
 	        requiredModList = modList;
-	        
         }
         
-        private static bool md5Check()
+        private static bool FileCheck()
         {
-        	string md5Hash;
-        	string hashPath;
-        	byte[] toHash;
-        	foreach (KeyValuePair<string, string> entry in md5List)
-        	{
-        		hashPath = System.IO.Path.Combine(GAMEDATAPATH, entry.Key);
-        		
-	        	MD5 md5 = MD5.Create();
-	        	
-	        	try
-	        	{
-	        		toHash = System.IO.File.ReadAllBytes(hashPath);
-	        	}
-	        	catch (System.IO.FileNotFoundException)
-	        	{
-	        		modMismatchError = "Required File Missing: " + System.IO.Path.GetFileName(hashPath);
-	        		return false;
-	        	}
-	        	catch (System.IO.DirectoryNotFoundException)
-	        	{
-	        		string dir = hashPath;
-	        		while(new System.IO.DirectoryInfo(dir).Parent.Name != "GameData")
-	        		{
-	        			dir = new System.IO.DirectoryInfo(dir).Parent.FullName;
-	        		}
-	        		modMismatchError = "Required Mod Missing or Incomplete: " + new System.IO.DirectoryInfo(dir).Name;
-	        		return false;
-	        	}
-	        	catch (System.IO.IsolatedStorage.IsolatedStorageException) //EXACTLY the same as directory not found, but thrown for the same reason (why?)
-	        	{
-	        		string dir = hashPath;
-	        		while(new System.IO.DirectoryInfo(dir).Parent.Name != "GameData")
-	        		{
-	        			dir = new System.IO.DirectoryInfo(dir).Parent.FullName;
-	        		}
-	        		modMismatchError = "Required Mod Missing or Incomplete: " + new System.IO.DirectoryInfo(dir).Name;
-	        		return false;
-	        	}
-	        	catch (Exception e)
-	        	{
-		        	Log.Info(e.ToString());
-		        	return false;
-	        	}
-	        	
-	        	md5Hash = doHashMD5(md5, toHash);
-	        	if (md5Hash != entry.Value.ToLower())
-	        	{
-	        		string failedFile = System.IO.Path.GetFileName(hashPath);
-	        		modMismatchError = "MD5 Checksum Mismatch: " + failedFile;
-	        		return false;
-	        	}
-	        }
+            char[] replaceChars = {'\\', '/'};
+            try
+            {
+                foreach (KeyValuePair<string, SHAMod> entry in modFileList)
+                {
+                    // if server settings don't say to check all mod files, and it's not a DLL or CFG file, then skip it
+                    if (!gameManager.checkAllModFiles && !entry.Key.EndsWith(".cfg", System.StringComparison.InvariantCultureIgnoreCase) && !entry.Key.EndsWith(".dll", System.StringComparison.InvariantCultureIgnoreCase))
+                    {
+                        continue;
+                    }
+                    LoadedFileInfo FileInfo = null;
+                    if (resourceControlMode == "whitelist")
+                    {
+                        if (resourceList.Contains(entry.Key)) // don't check anything that has been specifically whitelisted
+                        {
+                            Log.Debug("SHA hash checking skipped due to whitelisting: " + entry.Key);
+                            continue;
+                        }
+                    }
+                    else if (entry.Key.StartsWith(PLUGIN_DATA_DIRECTORY) && (entry.Key.EndsWith(".txt") || entry.Key.EndsWith(".xml"))) // if using a blacklist, ignore any files in the KMP PluginData folder that are supposed to be there
+                    {
+                        Log.Debug("SHA hash checking skipped due to being a KMP file that changes: " + entry.Key);
+                        continue;
+                    }
+                    try
+                    {
+                        FileInfo = KMPManager.LoadedModfiles.SingleOrDefault(x => x.ModPath == entry.Key);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        modMismatchError = "Multiple of same file defined in different directories: " + entry.Key;
+                        return false;
+                    }
+                    if (FileInfo == null)
+                    {
+                        if (entry.Value.required) // the file doesn't exist, so refuse connection if it's a required mod
+                        {
+                            modMismatchError = "Required File Missing: " + entry.Key;
+                            return false;
+                        }
+                        else // if it's just an optional mod, continue because it's ok if it's missing
+                        {
+                            continue;
+                        }
+                    }
+                    else if (String.Compare(FileInfo.SHA256, entry.Value.sha, true) != 0 && entry.Value.sha != "") // if the mod file exists, then it MUST match the SHA from the server (unless SHA section was blank, which means it is a required file but doesn't need to match)
+                    {
+                        modMismatchError = "SHA Checksum Mismatch: " + FileInfo.LoadedPath;
+                        return false;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                modMismatchError = e.Message;
+                return false;
+            }
 	        return true;
 	    }
         
@@ -427,16 +443,15 @@ namespace KMP
         {
         	try
         	{
-        		string[] ls = System.IO.Directory.GetFiles(GAMEDATAPATH, "*.*", System.IO.SearchOption.AllDirectories);
 	        	if(resourceControlMode == "blacklist")
 	        	{
 	        		foreach(string checkedResource in resourceList)
 	        		{
-	        			foreach(string resource in ls)
-	        			{
-	        				if(resource.Contains(checkedResource))
+                        foreach (LoadedFileInfo file in KMPManager.LoadedModfiles)
+                        {
+	        				if(file.ModPath.Contains(checkedResource))
 	        				{
-	        					modMismatchError = "Resource Blacklisted: " + new System.IO.DirectoryInfo(resource).Name;
+                                modMismatchError = "File blacklisted: " + file.LoadedPath;
 	        					return false;
 	        				}
 	        			}
@@ -444,61 +459,32 @@ namespace KMP
 	        	}
 	        	else if(resourceControlMode == "whitelist")
 	        	{
-	        		foreach(string resource in ls)
-	        		{
-	        			if(resource.Contains(".dll") && !((resource.Contains("KerbalMultiPlayer.dll") 
-	        			|| resource.Contains("ICSharpCode.SharpZipLib.dll")) && resource.Contains("KMP")))//is .dll the ONLY type we need to worry about? 
-	        			{
-	        				bool allowed = false;
-	        				foreach(string checkedResource in resourceList)
-	        				{
-	        					if(resource.Contains(checkedResource))
-	        					{
-									allowed = true;
-									break;
-	        					}
-	        				}
-	        				if(!allowed)
-	        				{
-	        					modMismatchError = "Resource Not On Whitelist: " + new System.IO.DirectoryInfo(resource).Name;
-	        					return false;
-	        				}
-	        			}
+                    foreach (LoadedFileInfo file in KMPManager.LoadedModfiles)
+                    {
+                        if (file.LoadedPath.StartsWith("Plugins") || file.LoadedPath.StartsWith("Parts")) // do not allow mod files that are in the Plugins or Parts directories (they load differently, and often cause errors). All mods should be in the GameData directory.
+                        {
+                            modMismatchError = "You may not join a server if you have mods installed in the deprecated mod directories ('Plugins' or 'Parts' directories in the KSP root directory)";
+                            return false;
+                        }
+                        // if server settings don't say to check all mod files, and it's not a DLL or CFG file, then skip it
+                        if (gameManager.checkAllModFiles || file.ModPath.EndsWith(".dll", System.StringComparison.InvariantCultureIgnoreCase) || file.ModPath.EndsWith(".cfg", System.StringComparison.InvariantCultureIgnoreCase))
+                        {
+                            if (!resourceList.Contains(file.ModPath) && !modFileList.ContainsKey(file.ModPath)) // check if the resource is a) whitelisted, or b) listed in the optional or required SHA sections. If not, the file is not allowed to be loaded.
+                            {
+                                modMismatchError = "File not allowed on this server: " + file.LoadedPath;
+                                return false;
+                            }
+                        }
 	        		}
 	        	}
 	        	return true;
 	        }
 	        catch (Exception e)
 	        {
-	        	Log.Info(e.ToString());
+                modMismatchError = e.Message;
+	        	Log.Debug(e.ToString());
 	        	return false;
 	        }
-        }
-        
-        private static bool requiredCheck()
-        {
-        	string[] ls = System.IO.Directory.GetDirectories(GAMEDATAPATH);
-        	bool found;
-        	foreach (string required in requiredModList)
-        	{
-        		found = false;
-        		
-	        	foreach (string resource in ls)
-	        	{
-	        		if (required == new System.IO.DirectoryInfo(resource).Name)
-	        		{
-	        			found = true;
-	        			break;
-	        		}
-	        	}
-	        	if (!found)
-	        	{
-	        		modMismatchError = "Missing Required Mod: " + required;
-	        		return false;
-	        	}
-	        }
-        	
-        	return true;
         }
         
         private static bool modCheck(byte[] kmpModControl_bytes)
@@ -509,9 +495,9 @@ namespace KMP
 				string modFilePath = System.IO.Path.Combine(GAMEDATAPATH, "KMP/Plugins/PluginData/KerbalMultiPlayer/" + MOD_CONTROL_FILENAME);
 	        	System.IO.File.WriteAllBytes(modFilePath, kmpModControl_bytes);
 	        	
-				parseModFile(modFilePath);
+				parseModFile(System.Text.Encoding.UTF8.GetString(kmpModControl_bytes));
 	        	
-	        	if (!md5Check() || !resourceCheck() || !requiredCheck())
+	        	if (!resourceCheck() || !FileCheck())
 	        	{
 	        		return false;
 	        	}
@@ -529,8 +515,6 @@ namespace KMP
 
         public static void Connect()
         {
-            screenshotsWaiting.Clear();
-        	modFileChecked = false;
             clearConnectionState();
             File.Delete<KMPClientMain>("debug");
             serverThread = new Thread(beginConnect);
@@ -641,7 +625,7 @@ namespace KMP
                             if (ipv6_tcpClient.Client.Connected) {
                                 ipv6_connected = true;
                                 address = ipv6_address;
-                                tcpSocket = ipv6_tcpClient.Client;
+                                tcpClient = ipv6_tcpClient;
                             } else {
                                 ipv6_tcpClient = null;
                                 ipv6_endpoint = null;
@@ -667,7 +651,7 @@ namespace KMP
             {
                 //Connects IPv4 Hostnames, And IPv6/IPv4 IP's.
                 if (ipv6_connected == false) {
-                    TcpClient tcpClient = new TcpClient(address.AddressFamily);
+                    tcpClient = new TcpClient(address.AddressFamily);
                     tcpClient.NoDelay = true;
                     IPEndPoint endpoint = new IPEndPoint(address, port);
                     if (address.AddressFamily == AddressFamily.InterNetworkV6) {
@@ -676,10 +660,9 @@ namespace KMP
                         SetMessage("Connecting to IPv4: " + address + ":" + port);
                     }
                     tcpClient.Connect(endpoint);
-                    tcpSocket = tcpClient.Client;
                 }
                 //tcpSocket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.KeepAlive, true);
-                if (tcpSocket.Connected)
+                if (tcpClient.Connected)
                 {
                     SetMessage("TCP connection established");
                     clientID = -1;
@@ -688,15 +671,24 @@ namespace KMP
                     handshakeCompleted = false;
                     receivedSettings = false;
 
+					splitMessageData = null;
+					splitMessageReceiveIndex = 0;
+					screenshotsWaiting.Clear();
+					modFileChecked = false;
+
+					isClientSendingData = false;
+					isClientSendingUDPData = false;
+
                     pluginUpdateInQueue = new Queue<byte[]>();
                     textMessageQueue = new Queue<InTextMessage>();
-                    lock (interopOutQueueLock)
-                    {
-                        interopOutQueue = new Queue<byte[]>();
-                    }
                     interopInQueue = new Queue<byte[]>();
 
                     receivedMessageQueue = new Queue<ServerMessage>();
+
+					queuedOutMessages = new Queue<byte[]>();
+					queuedOutMessagesSplit = new Queue<byte[]>();
+					queuedOutMessagesHighPriority = new Queue<byte[]>();
+					queuedOutUDPMessages = new Queue<byte[]>();
 
                     threadException = null;
 
@@ -714,16 +706,16 @@ namespace KMP
                     try
                     {
                         IPEndPoint endpoint = new IPEndPoint(address, port);
-                        udpSocket = new Socket(endpoint.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
-                        udpSocket.Connect(endpoint);
+                        udpClient = new UdpClient(endpoint.AddressFamily);
+                        udpClient.Connect(endpoint);
                     }
                     catch (Exception e)
                     {
                         Log.Debug("Exception thrown in connectionLoop(), catch 3, Exception: {0}", e.ToString());
-                        if (udpSocket != null)
-                            udpSocket.Close();
+                        if (udpClient != null)
+                            udpClient.Close();
 
-                        udpSocket = null;
+                        udpClient = null;
                     }
 
                     udpConnected = false;
@@ -747,7 +739,7 @@ namespace KMP
 
                     SetMessage("Connected to server! Handshaking...");
 
-                    while (!endSession && !intentionalConnectionEnd && tcpSocket.Connected)
+                    while (!endSession && !intentionalConnectionEnd && tcpClient.Connected)
                     {
                         //Check for exceptions thrown by threads
                         lock (threadExceptionLock)
@@ -779,10 +771,10 @@ namespace KMP
             {
                 Log.Debug("Exception thrown in connectionLoop(), catch 4, Exception: {0}", e.ToString());
                 SetMessage("Disconnected");
-                if (tcpSocket != null)
-                   tcpSocket.Close();
+                if (tcpClient != null)
+                   tcpClient.Close();
 
-                tcpSocket = null;
+                tcpClient = null;
             }
 
             return false;
@@ -808,7 +800,7 @@ namespace KMP
                             int kmpModControl_length = KMPCommon.intFromBytes(data, 16 + server_version_length);
                             kmpModControl_bytes = new byte[kmpModControl_length];
                             Array.Copy(data, 20 + server_version_length, kmpModControl_bytes, 0, kmpModControl_length);
-							
+                            gameManager.checkAllModFiles = Convert.ToBoolean(data[20+server_version_length+kmpModControl_length]);
                             SetMessage("Handshake received. Server version: " + server_version);
                         }
                     }
@@ -962,8 +954,7 @@ namespace KMP
                                 }
                                 gameManager.gameCheatsEnabled = Convert.ToBoolean(data[21]);
 								gameManager.gameArrr = Convert.ToBoolean(data[22]);
-                                //partList, requiredModList, md5List, resourceList and resourceControlMode 
-
+                                //partList, requiredModList, shaList, resourceList and resourceControlMode 
                             }
 
                             receivedSettings = true;
@@ -1065,15 +1056,52 @@ namespace KMP
                     }
                     break;
 
-                case KMPCommon.ServerMessageID.SYNC:
-                    if (data != null) gameManager.targetTick = BitConverter.ToDouble(data, 0) + Convert.ToDouble(lastPing);
-
+				case KMPCommon.ServerMessageID.SYNC:
+					if (data != null) {
+						gameManager.targetTick = BitConverter.ToDouble (data, 0) + Convert.ToDouble (lastPing);
+						gameManager.skewTargetTick = BitConverter.ToDouble (data, 0);
+						gameManager.skewServerTime = BitConverter.ToInt64 (data, 8);
+						gameManager.skewSubspaceSpeed = BitConverter.ToSingle (data, 16);
+						gameManager.lastSubspaceLockChange = UnityEngine.Time.realtimeSinceStartup;
+						Log.Debug ("Client time locked to server:" + gameManager.skewTargetTick + " server time: " + gameManager.skewServerTime + " frequency " + gameManager.skewSubspaceSpeed + "x.");
+					}
                     break;
                 case KMPCommon.ServerMessageID.SYNC_COMPLETE:
                     gameManager.HandleSyncCompleted();
                     break;
+                case KMPCommon.ServerMessageID.SPLIT_MESSAGE:
+		    handleSplitMessage(data);
+                    break;
+                case KMPCommon.ServerMessageID.SYNC_TIME:
+                    gameManager.HandleSyncTimeCompleted(data);
+                    break;
             }
         }
+
+		public static void handleSplitMessage(byte[] data) {
+			if (splitMessageReceiveIndex == 0) {
+				//New split message
+				int split_message_length = KMPCommon.intFromBytes (data, 4);
+				splitMessageData = new byte[8 + split_message_length];
+				data.CopyTo (splitMessageData, 0);
+				splitMessageReceiveIndex = data.Length;
+			} else {
+				//Continued split message
+				data.CopyTo (splitMessageData, splitMessageReceiveIndex);
+				splitMessageReceiveIndex = splitMessageReceiveIndex + data.Length;
+			}
+				//Check if we have filled the byte array, if so, handle the message.
+			if (splitMessageReceiveIndex == splitMessageData.Length) {
+				//Parse the message and feed it into handleMessage
+				int joined_message_id = KMPCommon.intFromBytes (splitMessageData, 0);
+				int joined_message_length = KMPCommon.intFromBytes (splitMessageData, 4);
+				byte[] joined_message_data = new byte[joined_message_length];
+				Array.Copy (splitMessageData, 8, joined_message_data, 0, joined_message_length);
+				byte[] joined_message_data_decompressed = KMPCommon.Decompress(joined_message_data);
+				handleMessage ((KMPCommon.ServerMessageID)joined_message_id, joined_message_data_decompressed);
+				splitMessageReceiveIndex = 0;
+			}
+		}
 
         public static void clearConnectionState()
         {
@@ -1091,13 +1119,13 @@ namespace KMP
 
                 Log.Debug("Closing connections...");
                 //Close the socket if it's still open
-                if (tcpSocket != null)
-                    tcpSocket.Close();
-                tcpSocket = null;
+                if (tcpClient != null)
+                    tcpClient.Close();
+                tcpClient = null;
 
-                if (udpSocket != null)
-                    udpSocket.Close();
-                udpSocket = null;
+                if (udpClient != null)
+                    udpClient.Close();
+                udpClient = null;
             }
             catch (ThreadAbortException e) {
                 Log.Debug("Exception thrown in clearConnectionState(), catch 1, Exception: {0}", e.ToString());
@@ -1135,7 +1163,7 @@ namespace KMP
                         handled = true;
                         if (!pingStopwatch.IsRunning)
                         {
-                            sendMessageTCP(KMPCommon.ClientMessageID.PING, null);
+                            queueOutgoingMessage(KMPCommon.ClientMessageID.PING, null);
                             pingStopwatch.Start();
                         }
                     }
@@ -1376,13 +1404,6 @@ namespace KMP
                     if (handshakeCompleted)
                         processPluginInterop();
 
-                    if (stopwatch.ElapsedMilliseconds - lastInteropWriteTime >= INTEROP_WRITE_INTERVAL)
-                    {
-                        if (writePluginInterop())
-                        {
-                            lastInteropWriteTime = stopwatch.ElapsedMilliseconds;
-                        }
-                    }
 
                     //Throttle the rate at which you can share screenshots
                     if (stopwatch.ElapsedMilliseconds - lastScreenshotShareTime > screenshotInterval)
@@ -1471,7 +1492,7 @@ namespace KMP
 
                     //Send a keep-alive message to prevent timeout
                     if (stopwatch.ElapsedMilliseconds - lastTCPMessageSendTime >= KEEPALIVE_DELAY)
-                        sendMessageTCP(KMPCommon.ClientMessageID.KEEPALIVE, null);
+                        queueOutgoingMessage(KMPCommon.ClientMessageID.KEEPALIVE, null);
 
                     //Handle received messages
                     while (receivedMessageQueue.Count > 0)
@@ -1481,7 +1502,7 @@ namespace KMP
                         handleMessage(message.id, message.data);
                     }
 
-                    if (udpSocket != null && handshakeCompleted)
+                    if (udpClient != null && handshakeCompleted)
                     {
 
                         //Update the status of the udp connection
@@ -1520,7 +1541,8 @@ namespace KMP
                             }
                         }
                     }
-
+					sendOutgoingMessages();
+					sendOutgoingUDPMessages();
                     Thread.Sleep(SLEEP_TIME);
                 }
 
@@ -1603,99 +1625,44 @@ namespace KMP
 
         //Plugin Interop
 
-        static bool writePluginInterop()
-        {
-            bool success = false;
-            lock (interopOutQueueLock)
-            {
-                if (interopOutQueue.Count > 0)
-                {
-                    try
-                    {
-                        while (interopOutQueue.Count > 0)
-                        {
-                            byte[] message;
-                            message = interopOutQueue.Dequeue();
-                            KSP.IO.MemoryStream ms = new KSP.IO.MemoryStream();
-                            ms.Write(KMPCommon.intToBytes(KMPCommon.FILE_FORMAT_VERSION), 0, 4);
-                            ms.Write(message, 0, message.Length);
-                            gameManager.acceptClientInterop(ms.ToArray());
-                        }
-                        success = true;
-                    }
-                    catch (Exception e)
-                    {
-                        Log.Debug("Exception thrown in writePluginInterop(), catch 1, Exception: {0}", e.ToString());
-                    }
-                }
-            }
-            return success;
-        }
-
-
         static void processPluginInterop()
         {
-            if (interopInQueue.Count > 0)
-            {
-                try
-                {
-                    while (interopInQueue.Count > 0 && tcpSocket.Connected)
-                    {
-                        byte[] bytes;
-                        bytes = interopInQueue.Dequeue();
-                        if (bytes != null && bytes.Length > 0)
-                        {
-                            //Read the file-format version
-                            int file_version = KMPCommon.intFromBytes(bytes, 0);
+			if (interopInQueue.Count > 0 )
+			{
+				try
+				{
+				while (interopInQueue.Count > 0 && tcpClient.Connected)
+					{
+						byte[] bytes;
+						bytes = interopInQueue.Dequeue();
 
-                            if (file_version != KMPCommon.FILE_FORMAT_VERSION)
-                            {
-                                //Incompatible client version
-                                Log.Debug("KMP Client incompatible with plugin");
-                                return;
-                            }
+						//Read the message id
+						int id_int = KMPCommon.intFromBytes(bytes, 0);
 
-                            //Parse the messages
-                            int index = 4;
-                            while (index < bytes.Length - KMPCommon.INTEROP_MSG_HEADER_LENGTH)
-                            {
-                                //Read the message id
-                                int id_int = KMPCommon.intFromBytes(bytes, index);
+						KMPCommon.PluginInteropMessageID id = KMPCommon.PluginInteropMessageID.NULL;
+						if (id_int >= 0 && id_int < Enum.GetValues(typeof(KMPCommon.PluginInteropMessageID)).Length)
+							id = (KMPCommon.PluginInteropMessageID)id_int;
 
-                                KMPCommon.PluginInteropMessageID id = KMPCommon.PluginInteropMessageID.NULL;
-                                if (id_int >= 0 && id_int < Enum.GetValues(typeof(KMPCommon.PluginInteropMessageID)).Length)
-                                    id = (KMPCommon.PluginInteropMessageID)id_int;
+						//Read the length of the message data
+						int data_length = KMPCommon.intFromBytes(bytes, 4);
 
-                                //Read the length of the message data
-                                int data_length = KMPCommon.intFromBytes(bytes, index + 4);
-
-                                index += KMPCommon.INTEROP_MSG_HEADER_LENGTH;
-
-                                if (data_length <= 0)
-                                    handleInteropMessage(id, null);
-                                else if (data_length <= (bytes.Length - index))
-                                {
-
-                                    //Copy the message data
-                                    byte[] data = new byte[data_length];
-                                    Array.Copy(bytes, index, data, 0, data.Length);
-
-                                    handleInteropMessage(id, data);
-                                }
-
-                                if (data_length > 0)
-                                    index += data_length;
-                            }
-                        }
-                    }
-                }
-                catch (Exception e) {
-                    Log.Debug("Exception thrown in processPluginInterop(), catch 1, Exception: {0}", e.ToString());
-                }
-            }
+						if (data_length <= 0)
+							handleInteropMessage(id, null);
+						else
+						{
+							//Copy the message data
+							byte[] data = new byte[data_length];
+							Array.Copy(bytes, 8, data, 0, data.Length);
+							handleInteropMessage(id, data);
+						}
+					}
+				}
+				catch (Exception e) { Log.Debug("Exception thrown in processPluginInterop(), catch 1, Exception: {0}", e.ToString()); }
+			}
         }
         public static void acceptPluginInterop(byte[] bytes)
         {
+
             try
             {
                 interopInQueue.Enqueue(bytes);
@@ -1704,72 +1671,6 @@ namespace KMP
                 Log.Debug("Exception thrown in acceptPluginInterop(), catch 1, Exception: {0}", e.ToString());
             }
         }
-
-        //		static void readPluginInterop()
-        //		{
-        //
-        //			byte[] bytes = null;
-        //
-        //			if (KSP.IO.File.Exists<KMPClientMain>(INTEROP_PLUGIN_FILENAME))
-        //			{
-        //
-        //				try
-        //				{
-        //					bytes = KSP.IO.File.ReadAllBytes<KMPClientMain>(INTEROP_PLUGIN_FILENAME);
-        //					KSP.IO.File.Delete<KMPClientMain>(INTEROP_PLUGIN_FILENAME);
-        //				}
-        //				catch (KSP.IO.IOException)
-        //				{
-        //				}
-        //
-        //			}
-        //
-        //			if (bytes != null && bytes.Length > 0)
-        //			{
-        //				//Read the file-format version
-        //				int file_version = KMPCommon.intFromBytes(bytes, 0);
-        //
-        //				if (file_version != KMPCommon.FILE_FORMAT_VERSION)
-        //				{
-        //					//Incompatible client version
-        //					Log.Debug("KMP Client incompatible with plugin");
-        //					return;
-        //				}
-        //
-        //				//Parse the messages
-        //				int index = 4;
-        //				while (index < bytes.Length - KMPCommon.INTEROP_MSG_HEADER_LENGTH)
-        //				{
-        //					//Read the message id
-        //					int id_int = KMPCommon.intFromBytes(bytes, index);
-        //
-        //					KMPCommon.PluginInteropMessageID id = KMPCommon.PluginInteropMessageID.NULL;
-        //					if (id_int >= 0 && id_int < Enum.GetValues(typeof(KMPCommon.PluginInteropMessageID)).Length)
-        //						id = (KMPCommon.PluginInteropMessageID)id_int;
-        //
-        //					//Read the length of the message data
-        //					int data_length = KMPCommon.intFromBytes(bytes, index+4);
-        //
-        //					index += KMPCommon.INTEROP_MSG_HEADER_LENGTH;
-        //
-        //					if (data_length <= 0)
-        //						handleInteropMessage(id, null);
-        //					else if (data_length <= (bytes.Length - index))
-        //					{
-        //						
-        //						//Copy the message data
-        //						byte[] data = new byte[data_length];
-        //						Array.Copy(bytes, index, data, 0, data.Length);
-        //
-        //						handleInteropMessage(id, data);
-        //					}
-        //
-        //					if (data_length > 0)
-        //						index += data_length;
-        //				}
-        //			}
-        //
-        //		}
 
         static void handleInteropMessage(KMPCommon.PluginInteropMessageID id, byte[] data)
         {
@@ -1820,9 +1721,9 @@ namespace KMP
 
                         //Send the activity status to the server
                         if (in_flight)
-                            sendMessageTCP(KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_FLIGHT, null);
+                            queueOutgoingMessage(KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_FLIGHT, null);
                         else
-                            sendMessageTCP(KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_GAME, null);
+                            queueOutgoingMessage(KMPCommon.ClientMessageID.ACTIVITY_UPDATE_IN_GAME, null);
                     }
 
                     if (watchPlayerName != new_watch_player_name)
@@ -1859,11 +1760,14 @@ namespace KMP
 
                     break;
                 case KMPCommon.PluginInteropMessageID.WARPING:
-                    sendMessageTCP(KMPCommon.ClientMessageID.WARPING, data);
+                    queueOutgoingMessage(KMPCommon.ClientMessageID.WARPING, data);
                     break;
                 case KMPCommon.PluginInteropMessageID.SSYNC:
-                    sendMessageTCP(KMPCommon.ClientMessageID.SSYNC, data);
+                    queueOutgoingMessage(KMPCommon.ClientMessageID.SSYNC, data);
                     break;
+				case KMPCommon.PluginInteropMessageID.SYNC_TIME:
+					queueOutgoingMessage(KMPCommon.ClientMessageID.SYNC_TIME, null);
+					break;
             }
         }
 
@@ -1882,13 +1786,7 @@ namespace KMP
 
             lock (interopOutQueueLock)
             {
-                interopOutQueue.Enqueue(message_bytes);
-
-                //Enforce max queue size
-                while (interopOutQueue.Count > INTEROP_MAX_QUEUE_SIZE)
-                {
-                    interopOutQueue.Dequeue();
-                }
+				gameManager.acceptClientInterop (message_bytes);
             }
         }
 
@@ -2165,7 +2063,7 @@ namespace KMP
         {
             try
             {
-                if (tcpSocket != null)
+                if (tcpClient != null)
                 {
                     currentMessageHeaderIndex = 0;
                     currentMessageDataIndex = 0;
@@ -2173,9 +2071,8 @@ namespace KMP
                     receiveHandleIndex = 0;
 
                     StateObject state = new StateObject();
-                    state.workSocket = tcpSocket;
-                    tcpSocket.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
-                        new AsyncCallback(ReceiveCallback), state);
+                    state.workClient = tcpClient;
+                    tcpClient.GetStream().BeginRead(state.buffer, 0, StateObject.BufferSize, new AsyncCallback(ReceiveCallback), state);
                 }
             }
             catch (KSP.IO.IOException e)
@@ -2200,9 +2097,9 @@ namespace KMP
                 // Retrieve the state object and the client socket 
                 // from the asynchronous state object.
                 StateObject state = (StateObject)ar.AsyncState;
-                Socket client = state.workSocket;
+                TcpClient client = state.workClient;
                 // Read data from the remote device.
-                int bytesRead = client.EndReceive(ar);
+                int bytesRead = client.GetStream().EndRead(ar);
                 if (bytesRead > 0)
                 {
                     // There might be more data, so store the data received so far.
@@ -2215,8 +2112,7 @@ namespace KMP
                         receiveIndex += bytesRead;
                         handleReceive();
                         //  Get the rest of the data.
-                        client.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
-                            new AsyncCallback(ReceiveCallback), state);
+                        client.GetStream().BeginRead(state.buffer, 0, StateObject.BufferSize, new AsyncCallback(ReceiveCallback), state);
                     }
                 }
                 else
@@ -2352,14 +2248,14 @@ namespace KMP
             KMPCommon.intToBytes(guid_bytes.Length).CopyTo(message_data, 4 + username_bytes.Length);
             guid_bytes.CopyTo(message_data, 4 + username_bytes.Length + 4);
             version_bytes.CopyTo(message_data, 4 + username_bytes.Length + 4 + guid_bytes.Length);
-            sendMessageTCP(KMPCommon.ClientMessageID.HANDSHAKE, message_data);
+            queueOutgoingMessage(KMPCommon.ClientMessageID.HANDSHAKE, message_data);
         }
 
         internal static void sendTextMessage(String message)
         {
             //Encode message
             byte[] message_bytes = encoder.GetBytes(message);
-            sendMessageTCP(KMPCommon.ClientMessageID.TEXT_MESSAGE, message_bytes);
+            queueOutgoingMessage(KMPCommon.ClientMessageID.TEXT_MESSAGE, message_bytes);
         }
 
         private static void sendPluginUpdate(byte[] data, bool primary)
@@ -2370,9 +2266,9 @@ namespace KMP
                     = primary ? KMPCommon.ClientMessageID.PRIMARY_PLUGIN_UPDATE : KMPCommon.ClientMessageID.SECONDARY_PLUGIN_UPDATE;
 
                 if (udpConnected && data.Length < 100)
-                    sendMessageUDP(id, data);
+					queueOutgoingUDPMessage(id, data);
                 else
-                    sendMessageTCP(id, data);
+                    queueOutgoingMessage(id, data);
             }
         }
 		
@@ -2381,16 +2277,16 @@ namespace KMP
             if (data != null && data.Length > 0)
             {
                 if (udpConnected && data.Length < 100)
-                    sendMessageUDP(KMPCommon.ClientMessageID.SCENARIO_UPDATE, data);
+					queueOutgoingUDPMessage(KMPCommon.ClientMessageID.SCENARIO_UPDATE, data);
                 else
-                    sendMessageTCP(KMPCommon.ClientMessageID.SCENARIO_UPDATE, data);
+                    queueOutgoingMessage(KMPCommon.ClientMessageID.SCENARIO_UPDATE, data);
             }
         }
 		
         private static void sendShareScreenshotMessage(byte[] data)
         {
             if (data != null && data.Length > 0)
-                sendMessageTCP(KMPCommon.ClientMessageID.SCREENSHOT_SHARE, data);
+                queueOutgoingMessage(KMPCommon.ClientMessageID.SCREENSHOT_SHARE, data);
         }
 
         private static void sendScreenshotWatchPlayerMessage(String name)
@@ -2398,7 +2294,7 @@ namespace KMP
             //Encode name
             byte[] bytes = encoder.GetBytes(name);
 
-            sendMessageTCP(KMPCommon.ClientMessageID.SCREEN_WATCH_PLAYER, bytes);
+            queueOutgoingMessage(KMPCommon.ClientMessageID.SCREEN_WATCH_PLAYER, bytes);
         }
 
         internal static void sendConnectionEndMessage(String message)
@@ -2406,7 +2302,7 @@ namespace KMP
             //Encode message
             byte[] message_bytes = encoder.GetBytes(message);
 
-            sendMessageTCP(KMPCommon.ClientMessageID.CONNECTION_END, message_bytes);
+            queueOutgoingMessage(KMPCommon.ClientMessageID.CONNECTION_END, message_bytes);
         }
 
         private static void sendShareCraftMessage(String craft_name, byte[] data, KMPCommon.CraftType type)
@@ -2425,7 +2321,7 @@ namespace KMP
                 name_bytes.CopyTo(bytes, 8);
                 data.CopyTo(bytes, 8 + name_bytes.Length);
 
-                sendMessageTCP(KMPCommon.ClientMessageID.SHARE_CRAFT_FILE, bytes);
+                queueOutgoingMessage(KMPCommon.ClientMessageID.SHARE_CRAFT_FILE, bytes);
             }
             else
                 enqueueTextMessage("Craft file is too large to send.", false, true);
@@ -2433,81 +2329,193 @@ namespace KMP
 
         }
 
-        private static void sendMessageTCP(KMPCommon.ClientMessageID id, byte[] data)
-        {
-            lock (tcpSendLock)
-            {
-                byte[] message_bytes = buildMessageByteArray(id, data);
-                int send_bytes_actually_sent = 0;
-                while (send_bytes_actually_sent < message_bytes.Length)
-                {
-                    try
-                    {
-                        //Send message
-                        send_bytes_actually_sent += tcpSocket.Send(message_bytes, send_bytes_actually_sent, message_bytes.Length - send_bytes_actually_sent, SocketFlags.None);
-                    //					Just do a blocking send
-                    //					tcpSocket.BeginSend(message_bytes, 0, message_bytes.Length, SocketFlags.None,
-                    //      					new AsyncCallback(SendCallback), tcpSocket); 
-                    }
-                    catch (System.InvalidOperationException e) {
-                        Log.Debug("Exception thrown in sendMessageTCP(), catch 1, Exception: {0}", e.ToString());
-                    }
-                    catch (KSP.IO.IOException e) {
-                        Log.Debug("Exception thrown in sendMessageTCP(), catch 2, Exception: {0}", e.ToString());
-                    }
+		private static void splitOutgoingMessage(ref byte[] next_message)
+		{
+			//Only split messages bigger than SEND_BUFFER.
+			if (next_message.Length > KMPCommon.SPLIT_MESSAGE_SIZE) {
+				int split_index = 0;
+				while (split_index < next_message.Length) {
+					int bytes_to_read = Math.Min (next_message.Length - split_index, KMPCommon.SPLIT_MESSAGE_SIZE);
+					byte[] split_message_bytes = new byte[bytes_to_read];
+					Array.Copy (next_message, split_index, split_message_bytes, 0, bytes_to_read);
+					byte[] split_message = buildMessageByteArray (KMPCommon.ClientMessageID.SPLIT_MESSAGE, split_message_bytes);
+					queuedOutMessagesSplit.Enqueue(split_message);
+					split_index = split_index + bytes_to_read;
+				}
+				//Return the first split message if we just split.
+				Log.Debug("Split message into "  + queuedOutMessagesSplit.Count.ToString());
+				next_message = queuedOutMessagesSplit.Dequeue ();
+			}
+		}
 
-                }
-            }
-            lastTCPMessageSendTime = stopwatch.ElapsedMilliseconds;
-        }
+		private static void queueOutgoingMessage (KMPCommon.ClientMessageID id, byte[] data)
+		{
+			//Figure out if this is a high or low priority message
+			byte[] message_bytes = buildMessageByteArray(id, data);
+			switch (id) {
+				case KMPCommon.ClientMessageID.HANDSHAKE:
+				case KMPCommon.ClientMessageID.TEXT_MESSAGE:
+				case KMPCommon.ClientMessageID.KEEPALIVE:
+				case KMPCommon.ClientMessageID.UDP_PROBE:
+				case KMPCommon.ClientMessageID.PING:
+				case KMPCommon.ClientMessageID.SYNC_TIME:
+					queuedOutMessagesHighPriority.Enqueue (message_bytes);
+					break;
+				default:
+					queuedOutMessages.Enqueue (message_bytes);
+					break;
+			}
+		}
 
-        //		private static void SendCallback(IAsyncResult ar) {
-        //		    try {
-        //		        // Retrieve the socket from the state object.
-        //		        Socket client = (Socket) ar.AsyncState;
-        //		
-        //		        // Complete sending the data to the remote device.
-        //		        client.EndSend(ar);
-        //		
-        //		    } catch (Exception e) {
-        //		        passExceptionToMain(e);
-        //		    }
-        //		}
+		private static void queueOutgoingUDPMessage (KMPCommon.ClientMessageID id, byte[] data)
+		{
+			byte[] message_bytes = buildMessageByteArray(id, data, KMPCommon.intToBytes(clientID));
+			queuedOutUDPMessages.Enqueue (message_bytes);
+
+		}
+
+		private static void sendOutgoingMessages() {
+			try
+			{
+				lock (sendOutgoingMessagesLock) {
+					if ((queuedOutMessagesHighPriority.Count > 0 || queuedOutMessagesSplit.Count > 0 || queuedOutMessages.Count > 0) && !isClientSendingData)
+					{
+						//Send high priority first, then any split messages (chopped up low priority messages), and then the normal queue.
+						//Large low priorty messages get chopped up into a split message just before send.
+						byte[] next_message = null;
+						if (queuedOutMessagesHighPriority.Count > 0) {
+							next_message = queuedOutMessagesHighPriority.Dequeue();
+						} else {
+							if (queuedOutMessagesSplit.Count > 0) {
+								next_message = queuedOutMessagesSplit.Dequeue();
+							} else {
+								next_message = queuedOutMessages.Dequeue();
+								splitOutgoingMessage(ref next_message);
+							}
+						}
+						if (next_message != null) {
+							isClientSendingData = true;
+							syncTimeRewrite(ref next_message);
+							tcpClient.GetStream().BeginWrite(next_message, 0, next_message.Length, new AsyncCallback(asyncTCPSend), next_message);
+						}
+					}
+				}
+			}
+			// Socket closed or not connected.
+			catch (System.InvalidOperationException e)
+			{
+				Log.Debug("Exception thrown in sendOutgoingMessages(), catch 1, Exception: {0}", e.ToString());
+			}
+			// Raised by BeginWrite, can mean socket is down.
+			catch (System.IO.IOException e)
+			{
+				Log.Debug("Exception thrown in sendOutgoingMessages(), catch 2, Exception: {0}", e.ToString());
+			}
+			catch (System.NullReferenceException e)
+			{
+				Log.Debug("Exception thrown in sendOutgoingMessages(), catch 3, Exception: {0}", e.ToString());
+			}
+		
+		}
+
+		private static void syncTimeRewrite(ref byte[] next_message) {
+			//SYNC_TIME Rewriting
+			int next_message_id = BitConverter.ToInt32(next_message, 0);
+			if (next_message_id == (int)KMPCommon.ClientMessageID.SYNC_TIME) {
+				byte[] time_sync_rewrite = new byte[8];
+				BitConverter.GetBytes(DateTime.UtcNow.Ticks).CopyTo(time_sync_rewrite, 0);
+				next_message = buildMessageByteArray(KMPCommon.ClientMessageID.SYNC_TIME, time_sync_rewrite);
+			}
+		}
+
+		private static void asyncTCPSend(IAsyncResult result)
+		{
+			try
+			{
+				if (tcpClient.Connected)
+				{
+					tcpClient.GetStream().EndWrite(result);
+					isClientSendingData = false;
+					if (queuedOutMessagesHighPriority.Count > 0 || queuedOutMessagesSplit.Count > 0 || queuedOutMessages.Count > 0) {
+						sendOutgoingMessages();
+					}
+				}
+			}
+			catch (Exception e)
+			{
+				Log.Debug("Exception thrown in asyncTCPSend(), catch 1, Exception: {0}", e.ToString());
+				gameManager.disconnect ("Disconnected: Send Error");
+			}
+		}
 
         private static void sendUDPProbeMessage(bool forceUDP)
         {
-            byte[] time = null;
-            if (gameManager.lastTick > 0d) time = BitConverter.GetBytes(gameManager.lastTick);
+			byte[] timeData = new byte[12];
+			if (gameManager.lastTick > 0) BitConverter.GetBytes(gameManager.lastTick).CopyTo(timeData, 0);
+			if (gameManager.listClientTimeWarp.Count > 0) {
+				BitConverter.GetBytes (gameManager.listClientTimeWarp.Average ()).CopyTo (timeData, 8);
+			} else {
+				BitConverter.GetBytes (1f).CopyTo (timeData, 8);
+			}
+
             if (udpConnected || forceUDP)//Always try UDP periodically
             {
-                sendMessageUDP(KMPCommon.ClientMessageID.UDP_PROBE, time);
+                queueOutgoingUDPMessage(KMPCommon.ClientMessageID.UDP_PROBE, timeData);
             }
-            else {
-                sendMessageTCP(KMPCommon.ClientMessageID.UDP_PROBE, time);
+            else
+            {
+                queueOutgoingMessage(KMPCommon.ClientMessageID.UDP_PROBE, timeData);
             }
             lastUDPProbeTime = stopwatch.ElapsedMilliseconds;
         }
 
-        private static void sendMessageUDP(KMPCommon.ClientMessageID id, byte[] data)
-        {
-            if (udpSocket != null)
-            {
-                //Send the packet
-                try
-                {
-                    udpSocket.Send(buildMessageByteArray(id, data, KMPCommon.intToBytes(clientID)));
-                }
-                catch (Exception e) {
-                    Log.Debug("Exception thrown in sendMessageUDP(), catch 1, Exception: {0}", e.ToString());
-                }
+		private static void sendOutgoingUDPMessages() {
+			try
+			{
+				lock (sendOutgoingUDPMessagesLock) {
+					if (queuedOutUDPMessages.Count > 0 && !isClientSendingUDPData)
+					{
+						byte[] next_message = null;
+						next_message = queuedOutUDPMessages.Dequeue();
+						isClientSendingUDPData = true;
+						udpClient.BeginSend(next_message, next_message.Length, new AsyncCallback(asyncUDPSend), next_message);
+					}
+				}
+			}
+			// Socket closed or not connected.
+			catch (System.InvalidOperationException e)
+			{
+				Log.Debug("Exception thrown in sendOutgoingUDPMessages(), catch 1, Exception: {0}", e.ToString());
+			}
+			// Raised by BeginWrite, can mean socket is down.
+			catch (System.IO.IOException e)
+			{
+				Log.Debug("Exception thrown in sendOutgoingUDPMessages(), catch 2, Exception: {0}", e.ToString());
+			}
+			catch (System.NullReferenceException e)
+			{
+				Log.Debug("Exception thrown in sendOutgoingUDPMessages(), catch 3, Exception: {0}", e.ToString());
+			}
 
-                lock (udpTimestampLock)
-                {
-                    lastUDPMessageSendTime = stopwatch.ElapsedMilliseconds;
-                }
+		}
 
-            }
-        }
+		private static void asyncUDPSend(IAsyncResult result)
+		{
+			try
+			{
+				udpClient.EndSend(result);
+				lastUDPMessageSendTime = stopwatch.ElapsedMilliseconds;
+				isClientSendingUDPData = false;
+				if (queuedOutUDPMessages.Count > 0) {
+					sendOutgoingUDPMessages();
+				}
+			}
+			catch (Exception e)
+			{
+				Log.Debug("Exception thrown in asyncUDPSend(), catch 1, Exception: {0}", e.ToString());
+				gameManager.disconnect ("Disconnected: Send Error");
+			}
+		}
 
         private static byte[] buildMessageByteArray(KMPCommon.ClientMessageID id, byte[] data, byte[] prefix = null)
         {
@@ -2604,12 +2612,18 @@ namespace KMP
     public class StateObject
     {
         // Client socket.
-        public Socket workSocket = null;
+        public TcpClient workClient = null;
         // Size of receive buffer.
         public const int BufferSize = 8192;
         // Receive buffer.
         public byte[] buffer = new byte[BufferSize];
         // Received data string.
         public byte[] data = new byte[BufferSize];
+    }
+
+    public class SHAMod
+    {
+        public string sha { get; set; }
+        public bool required { get; set; }
     }
 }
