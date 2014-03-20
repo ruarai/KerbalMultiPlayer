@@ -23,8 +23,8 @@ using System.Text.RegularExpressions;
 using System.Threading;
 
 namespace KMPServer
-
-    internal class Server
+{
+    public class Server
     {
         public struct ClientMessage
         {
