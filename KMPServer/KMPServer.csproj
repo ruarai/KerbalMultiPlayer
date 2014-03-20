@@ -52,6 +52,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="DatabaseHelper.cs" />
     <Compile Include="DBExtensions.cs" />
     <Compile Include="Logger.cs" />
     <Compile Include="Client.cs" />
@@ -91,6 +92,9 @@
       <SubType>Designer</SubType>
     </None>
     <None Include="sqlite3.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="libsqlite3.0.dylib">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
