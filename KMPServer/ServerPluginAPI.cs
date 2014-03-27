@@ -23,7 +23,7 @@ namespace KMPServer
             {
                 var assembly = Assembly.LoadFile(file.FullName);
 
-                var plugin = new Plugin(assembly,file.Name);
+                var plugin = new Plugin(assembly, file.Name);
                 plugin.Initialize();
                 plugins.Add(plugin);
 
@@ -33,36 +33,42 @@ namespace KMPServer
 
         public static void InvokeAll(string methodName)
         {
-            InvokeAll(methodName,null);
+            InvokeAll(methodName, null);
         }
 
-        public static void InvokeAll(string methodName,params object[] parameters)
+        public static void InvokeAll(string methodName, params object[] parameters)
         {
             foreach (Plugin plugin in plugins)
             {
-                plugin.Invoke(methodName,parameters);
+                plugin.Invoke(methodName, parameters);
             }
         }
 
-
-        public static object ReturnIfEqual(string methodName,object equalTo,object defaultReturn)
+        public static PluginResult InvokeReturnResult(string methodName)
         {
-            return ReturnIfEqual(methodName, equalTo, defaultReturn,null);
+            return InvokeReturnResult(methodName, null);
         }
 
-        public static object ReturnIfEqual(string methodName, object equalTo, object defaultReturn,params object[] parameters)
+        public static PluginResult InvokeReturnResult(string methodName, params object[] parameters)
         {
             foreach (Plugin plugin in plugins)
             {
                 var returned = plugin.Invoke(methodName, parameters);
-                if (returned.Equals(equalTo))
+
+                if (returned != null)
                 {
-                    Log.Debug("Plugin {0} handled {1}",plugin.FileName,methodName);
-                    return equalTo;
+                    var pluginResult = (PluginResult) returned;
+
+                    if (pluginResult.Success)
+                    {
+                        //Log.Debug("Plugin {0} handled {1}", plugin.FileName, methodName);
+                        return pluginResult;
+                    }
                 }
             }
-            return defaultReturn;
+            return new PluginResult(false);
         }
+
     }
 
     public class Plugin
@@ -79,9 +85,9 @@ namespace KMPServer
 
         public void Initialize()
         {
-            Log.Debug("Initializing {0}",FileName);
+            Log.Debug("Initializing {0}", FileName);
 
-            foreach (var type in Assembly.GetTypes())//this is a lot faster i think
+            foreach (var type in Assembly.GetTypes())
             {
                 foreach (var method in type.GetMethods().Where(method => method.IsStatic))
                 {
@@ -97,7 +103,7 @@ namespace KMPServer
             return Invoke(methodName, null);
         }
 
-        public object Invoke(string methodName,params object[] parameters)
+        public object Invoke(string methodName, params object[] parameters)
         {
             try
             {
@@ -106,16 +112,26 @@ namespace KMPServer
             }
             catch (Exception e)
             {
-                Log.Debug("Plugin API exception in Invoke(methodName,parameters) from {0}",FileName);
+                Log.Debug("Plugin API exception in Invoke(methodName,parameters) from {0}", FileName);
                 Log.Debug(e.ToString());
                 return null;
             }
         }
-        
+
 
         private static MethodInfo FindMethod(string methodName)
         {
             return methods.FirstOrDefault(m => m.Name == methodName);
         }
+    }
+
+    public class PluginResult
+    {
+        public PluginResult(bool success)
+        {
+            Success = success;
+        }
+        public object Data;
+        public bool Success;
     }
 }

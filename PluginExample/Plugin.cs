@@ -1,4 +1,5 @@
-﻿using KMPServer;
+﻿using System.Net;
+using KMPServer;
 
 namespace PluginExample
 {
@@ -28,41 +29,43 @@ namespace PluginExample
         }
 
         //Commands enter whilst server is running
-        public static bool OnServerCommand(string input)
+        public static PluginResult OnServerCommand(string input)
         {
             if (input.ToLower().Trim().Split(' ')[0] == "/test")
             {
                 Log.Debug("Server command handled!");
-                return true;
+                Log.Debug(input);
+                return new PluginResult(true);
             }
-            return false;
+            return new PluginResult(false);
         }
 
         //Commands entered before server is running
-        public static bool OnPreServerCommand(string input)
+        public static PluginResult OnPreServerCommand(string input)
         {
             if (input.ToLower().Trim().Split(' ')[0] == "/test")
             {
                 Log.Debug("Preserver command handled!");
-                return true;
+                Log.Debug(input);
+                return new PluginResult(true);
             }
-            return false;
+            return new PluginResult(false);
         }
 
         //Commands entered by clients and sent to the server
-        public static bool OnClientCommand(Client cl, string input)
+        public static PluginResult OnClientCommand(Client cl, string input)
         {
             if (input.ToLower().Trim().Split(' ')[0] == "!kickme")
             {
                 ServerMain.server.markClientForDisconnect(cl,"You got kicked by a plugin!");
                 ServerMain.server.sendTextMessageToAdmins(cl.username + " was kicked by a plugin.");
-                return true;//Report to the command API that this command has been handled and no "command not found" message will be sent
+                return new PluginResult(true);//Report to the command API that this command has been handled and no "command not found" message will be sent
             }
-            return false;//report that this plugin didnt handle this command
+            return new PluginResult(false);//report that this plugin didnt handle this command
         }
 
         //Every non-command chat message sent by a client
-        public static bool OnClientChat(Client cl, string input)
+        public static PluginResult OnClientChat(Client cl, string input)
         {
             //log to chat
             Log.Chat(cl.username, input);
@@ -76,7 +79,24 @@ namespace PluginExample
             //Send the chat message to all other clients
             ServerMain.server.sendTextMessageToAll(full_message);
 
-            return true;//Dont continue with standard formatting
+            return new PluginResult(true);//Dont continue with standard formatting
+        }
+
+        //Every time a http request is made to the servers http server
+        public static PluginResult OnHTTPRequest(HttpListenerContext context)
+        {
+            HttpListenerResponse response = context.Response;
+
+            string responseText = "TEST!";
+
+            //Send response
+            byte[] buffer = System.Text.Encoding.UTF8.GetBytes(responseText);
+            response.ContentLength64 = buffer.LongLength;
+            response.OutputStream.Write(buffer, 0, buffer.Length);
+            response.OutputStream.Close();
+
+
+            return new PluginResult(true);//Return to cancel standard http behaviour
         }
     }
 }

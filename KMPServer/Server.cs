@@ -791,40 +791,90 @@ namespace KMPServer
             try
             {
                 String cleanInput = input.ToLower().Trim();
-                var rawParts = input.Split(new char[] { ' ' }, 2);
-                var parts = cleanInput.Split(new char[] { ' ' }, 2);
+                var rawParts = input.Split(new char[] {' '}, 2);
+                var parts = cleanInput.Split(new char[] {' '}, 2);
                 //if (!parts[0].StartsWith("/")) { return; } //Allow server to send chat messages
 
-                if ((bool)ServerPluginAPI.ReturnIfEqual("OnServerCommand", true, false,input)) return;
-                //If a plugin returns true in their command handler, skip all other handling
+
+                
+                if (ServerPluginAPI.InvokeReturnResult("OnServerCommand",input).Success) return;
 
                 switch (parts[0])
                 {
-                    case "/ban": banServerCommand(parts); break;
-                    case "/clearclients": clearClientsServerCommand(); break;
-                    case "/countclients": countServerCommand(); break;
-                    case "/help": displayCommands(); break;
-                    case "/kick": kickServerCommand(parts); break;
-                    case "/listclients": listServerCommand(); break;
+                    case "/ban":
+                        banServerCommand(parts);
+                        break;
+                    case "/clearclients":
+                        clearClientsServerCommand();
+                        break;
+                    case "/countclients":
+                        countServerCommand();
+                        break;
+                    case "/help":
+                        displayCommands();
+                        break;
+                    case "/kick":
+                        kickServerCommand(parts);
+                        break;
+                    case "/listclients":
+                        listServerCommand();
+                        break;
                     case "/quit":
-                    case "/stop": quitServerCommand(parts); bHandleCommandsRunning = false; break;
-                    case "/save": saveServerCommand(); break;
-                    case "/register": registerServerCommand(parts); break;
-                    case "/update": updateServerCommand(parts); break;
-                    case "/unregister": unregisterServerCommand(parts); break;
-                    case "/dekessler": dekesslerServerCommand(parts); break;
-                    case "/countships": countShipsServerCommand(); break;
-                    case "/listships": listShipsServerCommand(); break;
-                    case "/lockship": lockShipServerCommand(parts); break;
-                    case "/deleteship": deleteShipServerCommand(parts); break;
-                    case "/reloadmodfile": reloadModFileServerCommand(); break;
-                    case "/say": sayServerCommand(rawParts); break;
-                    case "/motd": motdServerCommand(rawParts); break;
-                    case "/rules": rulesServerCommand(rawParts); break;
-                    case "/setinfo": serverInfoServerCommand(rawParts); break;
-                    case "/modgen": writeModControlCommand(parts); break;
-                    case "/dbdiag": Log.Info("[DBDIAG] {0}", Database); break;
-                    default: Log.Info("Unknown Command: " + cleanInput); break;
+                    case "/stop":
+                        quitServerCommand(parts);
+                        bHandleCommandsRunning = false;
+                        break;
+                    case "/save":
+                        saveServerCommand();
+                        break;
+                    case "/register":
+                        registerServerCommand(parts);
+                        break;
+                    case "/update":
+                        updateServerCommand(parts);
+                        break;
+                    case "/unregister":
+                        unregisterServerCommand(parts);
+                        break;
+                    case "/dekessler":
+                        dekesslerServerCommand(parts);
+                        break;
+                    case "/countships":
+                        countShipsServerCommand();
+                        break;
+                    case "/listships":
+                        listShipsServerCommand();
+                        break;
+                    case "/lockship":
+                        lockShipServerCommand(parts);
+                        break;
+                    case "/deleteship":
+                        deleteShipServerCommand(parts);
+                        break;
+                    case "/reloadmodfile":
+                        reloadModFileServerCommand();
+                        break;
+                    case "/say":
+                        sayServerCommand(rawParts);
+                        break;
+                    case "/motd":
+                        motdServerCommand(rawParts);
+                        break;
+                    case "/rules":
+                        rulesServerCommand(rawParts);
+                        break;
+                    case "/setinfo":
+                        serverInfoServerCommand(rawParts);
+                        break;
+                    case "/modgen":
+                        writeModControlCommand(parts);
+                        break;
+                    case "/dbdiag":
+                        Log.Info("[DBDIAG] {0}", Database);
+                        break;
+                    default:
+                        Log.Info("Unknown Command: " + cleanInput);
+                        break;
                 }
             }
             catch (FormatException e)
@@ -834,6 +884,12 @@ namespace KMPServer
             catch (IndexOutOfRangeException)
             {
                 Log.Error("Command found but missing elements.");
+            }
+            catch (Exception e)
+            {
+                Log.Error("fail");
+                Log.Error(e.Message);
+                Log.Error(e.StackTrace);
             }
         }
 
@@ -856,6 +912,7 @@ namespace KMPServer
             }
             catch (Exception e)
             {
+                Log.Error("Exception occured from handleCommands");
                 passExceptionToMain(e);
             }
         }
@@ -1836,72 +1893,76 @@ namespace KMPServer
                 HttpListener listener = (HttpListener)result.AsyncState;
 
                 HttpListenerContext context = listener.EndGetContext(result);
-                //HttpListenerRequest request = context.Request;
 
-                HttpListenerResponse response = context.Response;
-
-                //Build response string
-                StringBuilder response_builder = new StringBuilder();
-
-                response_builder.Append("Version: ");
-                response_builder.Append(KMPCommon.PROGRAM_VERSION);
-                response_builder.Append('\n');
-
-                response_builder.Append("Port: ");
-                response_builder.Append(settings.port);
-                response_builder.Append('\n');
-
-                response_builder.Append("Num Players: ");
-                response_builder.Append(activeClientCount());
-                response_builder.Append('/');
-                response_builder.Append(settings.maxClients);
-                response_builder.Append('\n');
-
-                response_builder.Append("Players: ");
-
-                bool first = true;
-
-                foreach (var client in clients.ToList().Where(c => c.isReady))
+                if (!ServerPluginAPI.InvokeReturnResult("OnHTTPRequest", context).Success)
                 {
-                    if (first)
-                        first = false;
-                    else
-                        response_builder.Append(", ");
 
-                    response_builder.Append(client.username);
+                    HttpListenerResponse response = context.Response;
+
+
+                    //Build response string
+                    StringBuilder response_builder = new StringBuilder();
+
+                    response_builder.Append("Version: ");
+                    response_builder.Append(KMPCommon.PROGRAM_VERSION);
+                    response_builder.Append('\n');
+
+                    response_builder.Append("Port: ");
+                    response_builder.Append(settings.port);
+                    response_builder.Append('\n');
+
+                    response_builder.Append("Num Players: ");
+                    response_builder.Append(activeClientCount());
+                    response_builder.Append('/');
+                    response_builder.Append(settings.maxClients);
+                    response_builder.Append('\n');
+
+                    response_builder.Append("Players: ");
+
+                    bool first = true;
+
+                    foreach (var client in clients.ToList().Where(c => c.isReady))
+                    {
+                        if (first)
+                            first = false;
+                        else
+                            response_builder.Append(", ");
+
+                        response_builder.Append(client.username);
+                    }
+
+                    response_builder.Append('\n');
+
+                    response_builder.Append("Information: ");
+                    response_builder.Append(settings.serverInfo);
+                    response_builder.Append('\n');
+
+                    response_builder.Append("Updates per Second: ");
+                    response_builder.Append(settings.updatesPerSecond);
+                    response_builder.Append('\n');
+
+                    response_builder.Append("Inactive Ship Limit: ");
+                    response_builder.Append(settings.totalInactiveShips);
+                    response_builder.Append('\n');
+
+                    response_builder.Append("Screenshot Height: ");
+                    response_builder.Append(settings.screenshotSettings.maxHeight);
+                    response_builder.Append('\n');
+
+                    response_builder.Append("Screenshot Save: ");
+                    response_builder.Append(settings.saveScreenshots);
+                    response_builder.Append('\n');
+
+                    response_builder.Append("Whitelisted: ");
+                    response_builder.Append(settings.whitelisted);
+                    response_builder.Append('\n');
+
+                    //Send response
+                    byte[] buffer = Encoding.UTF8.GetBytes(response_builder.ToString());
+                    response.ContentLength64 = buffer.LongLength;
+                    response.OutputStream.Write(buffer, 0, buffer.Length);
+                    response.OutputStream.Close();
                 }
-
-                response_builder.Append('\n');
-
-                response_builder.Append("Information: ");
-                response_builder.Append(settings.serverInfo);
-                response_builder.Append('\n');
-
-                response_builder.Append("Updates per Second: ");
-                response_builder.Append(settings.updatesPerSecond);
-                response_builder.Append('\n');
-
-                response_builder.Append("Inactive Ship Limit: ");
-                response_builder.Append(settings.totalInactiveShips);
-                response_builder.Append('\n');
-
-                response_builder.Append("Screenshot Height: ");
-                response_builder.Append(settings.screenshotSettings.maxHeight);
-                response_builder.Append('\n');
-
-                response_builder.Append("Screenshot Save: ");
-                response_builder.Append(settings.saveScreenshots);
-                response_builder.Append('\n');
-
-                response_builder.Append("Whitelisted: ");
-                response_builder.Append(settings.whitelisted);
-                response_builder.Append('\n');
-
-                //Send response
-                byte[] buffer = System.Text.Encoding.UTF8.GetBytes(response_builder.ToString());
-                response.ContentLength64 = buffer.LongLength;
-                response.OutputStream.Write(buffer, 0, buffer.Length);
-                response.OutputStream.Close();
 
                 //Begin listening for the next http request
                 listener.BeginGetContext(asyncHTTPCallback, listener);
@@ -2544,7 +2605,7 @@ namespace KMPServer
                 {
                     string message_lower = message_text.ToLower();
 
-                    if ((bool)ServerPluginAPI.ReturnIfEqual("OnClientCommand", true, false,cl, message_text)) return;
+                    if (ServerPluginAPI.InvokeReturnResult("OnClientCommand", message_text).Success) return;
 
                     if (message_lower == "!list")
                     {
@@ -2648,7 +2709,7 @@ namespace KMPServer
                     }
                 }
 
-                if ((bool)ServerPluginAPI.ReturnIfEqual("OnClientChat", true, false, cl, message_text)) return;
+                if (ServerPluginAPI.InvokeReturnResult("OnClientChat", message_text).Success) return;
 
                 if (settings.profanityFilter)
                     message_text = WashMouthWithSoap(message_text);
